@@ -1,0 +1,2805 @@
+--[[
+    Epic Minigames Universal Script
+    Target executor: Delta (also works on Wave / Solara / Arceus / любой современный)
+    UI: Rayfield (https://sirius.menu/rayfield)
+
+    Features:
+      - Авто-определение текущей мини-игры (Minigame: <name>)
+      - Универсальные читы (Walkspeed/Jump/Fly/Noclip/InfJump/ClickTP/GodMode и т.д.)
+      - База обходов на все ~140 мини-игр с категориями
+      - Auto-Bypass: при смене мини-игры сам применяет нужную стратегию
+
+    Запуск:
+      loadstring(game:HttpGet("https://gdjgjg.zo.space/em"))()
+]]
+
+------------------------------------------------------------
+-- Services
+------------------------------------------------------------
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage= game:GetService("ReplicatedStorage")
+local Workspace        = game:GetService("Workspace")
+local TeleportService  = game:GetService("TeleportService")
+local Lighting         = game:GetService("Lighting")
+local VirtualUser      = game:GetService("VirtualUser")
+
+local LocalPlayer      = Players.LocalPlayer
+local Mouse            = LocalPlayer:GetMouse()
+
+------------------------------------------------------------
+-- Anti-AFK
+------------------------------------------------------------
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(1)
+    VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+------------------------------------------------------------
+-- Состояние
+------------------------------------------------------------
+local State = {
+    CurrentMinigame   = "Lobby",
+    LastMinigame      = "",
+    WalkSpeed         = 16,
+    JumpPower         = 50,
+    InfJump           = false,
+    Fly               = false,
+    FlySpeed          = 80,
+    Hover             = false,
+    HoverHeight       = 30,
+    Noclip            = false,
+    ClickTP           = false,
+    GodMode           = false,
+    AntiFling         = false,
+    AutoBypass        = false,
+    AutoPlay          = false,
+    ManualBypass      = "Auto (по миниигре)",
+    BypassActive      = false,
+    SafePos           = nil, -- CFrame последней безопасной позиции
+    LobbyPos          = nil, -- Vector3 позиции в лобби (для детекта телепорта на карту)
+    StartDelay        = 17,  -- сек ожидания после обнаружения миниигры перед запуском обхода
+    RoundGen          = 0,   -- счётчик раундов (отменяет отложенный запуск при смене/конце)
+    RoundEndSignal    = false, -- ставится из lock/hover, когда движок телепортнул нас (конец раунда)
+}
+
+local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+------------------------------------------------------------
+-- БАЗА МИНИИГР (140 шт.) + категории стратегий
+-- Стратегии:
+--   "obby"      — выжить/добежать → Fly + Speed + InfJump
+--   "survival"  — продержаться → Fly + якорь над картой
+--   "race"      — гонка → MaxSpeed + InfJump
+--   "pvp"       — драка → Speed + ClickTP + GodMode
+--   "team"      — команда → Speed + Fly (универсально)
+--   "defense"   — оборона → якорь на споте + GodMode
+--   "collect"   — собирай предметы → Speed + Noclip + Fly
+--   "puzzle"    — реакция → Fly (зависнуть и не падать)
+------------------------------------------------------------
+local Minigames = {
+    -- Controller / Solo / Survival / Obby
+    ["Avalanche"]           = {cat = "Controller",  strat = "survival"},
+    ["Aztec Adventure"]     = {cat = "Controller",  strat = "obby"},
+    ["Balcony Bolt"]        = {cat = "Controller",  strat = "obby"},
+    ["Beat Block"]          = {cat = "Controller",  strat = "puzzle"},
+    ["Big Bomb Boom"]       = {cat = "Controller",  strat = "survival"},
+    ["Black Hole Scramble"] = {cat = "Controller",  strat = "survival"},
+    ["Blue Block Building"] = {cat = "Controller",  strat = "obby"},
+    ["Bombs Away"]          = {cat = "Controller",  strat = "survival"},
+    ["Booksquash"]          = {cat = "Controller",  strat = "survival"},
+    ["Bounce Out"]          = {cat = "Controller",  strat = "survival"},
+    ["Bowling Bustle"]      = {cat = "Controller",  strat = "survival"},
+    ["Bullet Bound"]        = {cat = "Controller",  strat = "puzzle"},
+    ["Bullet Evasion"]      = {cat = "Controller",  strat = "puzzle"},
+    ["Cake Delivery"]       = {cat = "Controller",  strat = "obby"},
+    ["Castle Climb"]        = {cat = "Controller",  strat = "obby"},
+    ["Cliffside Chaos"]     = {cat = "Controller",  strat = "obby"},
+    ["Colossal Assault"]    = {cat = "Controller",  strat = "survival"},
+    ["Compactor Crash"]     = {cat = "Controller",  strat = "survival"},
+    ["Conveyor Conundrum"]  = {cat = "Controller",  strat = "obby"},
+    ["Crag Clamber"]        = {cat = "Controller",  strat = "obby"},
+    ["Crumble Island"]      = {cat = "Controller",  strat = "survival"},
+    ["Crystal Clear"]       = {cat = "Controller",  strat = "collect"},
+    ["Desert Dehydration"]  = {cat = "Controller",  strat = "collect"},
+    ["Disc of Doom"]        = {cat = "Controller",  strat = "survival"},
+    ["Dizzying Decisions"]  = {cat = "Controller",  strat = "puzzle"},
+    ["Downhill Roll"]       = {cat = "Controller",  strat = "race"},
+    ["Electrical Gridlines"]= {cat = "Controller",  strat = "puzzle"},
+    ["Expedition Sprint"]   = {cat = "Controller",  strat = "race"},
+    ["Flee the Facility"]   = {cat = "Controller",  strat = "obby"},
+    ["Four Corners"]        = {cat = "Controller",  strat = "puzzle"},
+    ["Going Underground"]   = {cat = "Controller",  strat = "obby"},
+    ["Hard-Pressed"]        = {cat = "Controller",  strat = "survival"},
+    ["Haunted Hallways"]    = {cat = "Controller",  strat = "obby"},
+    ["Hedge Way Out"]       = {cat = "Controller",  strat = "obby"},
+    ["High Pressure"]       = {cat = "Controller",  strat = "survival"},
+    ["High-Rolling"]        = {cat = "Controller",  strat = "survival"},
+    ["Hurdle Hurry"]        = {cat = "Controller",  strat = "race"},
+    ["Juggernaut"]          = {cat = "Controller",  strat = "survival"},
+    ["Just Jump"]           = {cat = "Controller",  strat = "obby"},
+    ["Kooky Karts"]         = {cat = "Controller",  strat = "race"},
+    ["Lane Jumping"]        = {cat = "Controller",  strat = "obby"},
+    ["Laser Cutting"]       = {cat = "Controller",  strat = "puzzle"},
+    ["Laser Guidance"]      = {cat = "Controller",  strat = "puzzle"},
+    ["Lava Forecast"]       = {cat = "Controller",  strat = "survival"},
+    ["Lights On"]           = {cat = "Controller",  strat = "puzzle"},
+    ["Manic Mining"]        = {cat = "Controller",  strat = "collect"},
+    ["Mechanical Mayhem"]   = {cat = "Controller",  strat = "survival"},
+    ["Minefield March"]     = {cat = "Controller",  strat = "puzzle"},
+    ["Missile Command"]     = {cat = "Controller",  strat = "puzzle"},
+    ["Monster Melee"]       = {cat = "Controller",  strat = "survival"},
+    ["Orbit Snatcher"]      = {cat = "Controller",  strat = "collect"},
+    ["Paint to Perfection"] = {cat = "Controller",  strat = "puzzle"},
+    ["Penguin Pushover"]    = {cat = "Controller",  strat = "survival"},
+    ["Pipeworks"]           = {cat = "Controller",  strat = "puzzle"},
+    ["Pivot Paintings"]     = {cat = "Controller",  strat = "puzzle"},
+    ["Platform Peril"]      = {cat = "Controller",  strat = "survival"},
+    ["Protect the Statue"]  = {cat = "Controller",  strat = "defense"},
+    ["Pyre Pit"]            = {cat = "Controller",  strat = "survival"},
+    ["Race to the Top"]     = {cat = "Controller",  strat = "race"},
+    ["Revolution Cube"]     = {cat = "Controller",  strat = "survival"},
+    ["Robot Rampage"]       = {cat = "Controller",  strat = "survival"},
+    ["Romper Stomper"]      = {cat = "Controller",  strat = "survival"},
+    ["Round Race"]          = {cat = "Controller",  strat = "race"},
+    ["Rowing Rush"]         = {cat = "Controller",  strat = "race"},
+    ["Shark Survival"]      = {cat = "Controller",  strat = "survival"},
+    ["Sharkbait"]           = {cat = "Controller",  strat = "survival"},
+    ["Shock Absorbers"]     = {cat = "Controller",  strat = "survival"},
+    ["Skewer Shuffle"]      = {cat = "Controller",  strat = "survival"},
+    ["Slippery Sledding"]   = {cat = "Controller",  strat = "race"},
+    ["Spiky Spinner"]       = {cat = "Controller",  strat = "survival"},
+    ["Spiral Ascent"]       = {cat = "Controller",  strat = "obby"},
+    ["Survive the Spheres"] = {cat = "Controller",  strat = "survival"},
+    ["Sweeping Singe"]      = {cat = "Controller",  strat = "survival"},
+    ["Tee Time"]            = {cat = "Controller",  strat = "puzzle"},
+    ["Teetering Turmoil"]   = {cat = "Controller",  strat = "survival"},
+    ["The Block Chain"]     = {cat = "Controller",  strat = "puzzle"},
+    ["The Sweeper"]         = {cat = "Controller",  strat = "survival"},
+    ["Toxic Reactions"]     = {cat = "Controller",  strat = "puzzle"},
+    ["Traffic Stop"]        = {cat = "Controller",  strat = "survival"},
+    ["Train Trouble"]       = {cat = "Controller",  strat = "survival"},
+    ["Treacherous Tiles"]   = {cat = "Controller",  strat = "puzzle"},
+    ["Trial Traversing"]    = {cat = "Controller",  strat = "obby"},
+    ["Turntable Scurry"]    = {cat = "Controller",  strat = "survival"},
+    ["Uncertain Ground"]    = {cat = "Controller",  strat = "puzzle"},
+    ["Undead Aboard"]       = {cat = "Controller",  strat = "survival"},
+
+    -- Team
+    ["Above Water"]         = {cat = "Team",        strat = "team"},
+    ["Battleship Skirmish"] = {cat = "Team",        strat = "team"},
+    ["Block Hunt"]          = {cat = "Team",        strat = "team"},
+    ["Cannon Cooldown"]     = {cat = "Team",        strat = "team"},
+    ["Castle Clash"]        = {cat = "Team",        strat = "pvp"},
+    ["Clear Side"]          = {cat = "Team",        strat = "team"},
+    ["Cloud Control"]       = {cat = "Team",        strat = "team"},
+    ["Cube Factory"]        = {cat = "Team",        strat = "team"},
+    ["Deadly Dogfight"]     = {cat = "Team",        strat = "pvp"},
+    ["Deforestation Dash"]  = {cat = "Team",        strat = "race"},
+    ["Destroy the Statue"]  = {cat = "Team",        strat = "pvp"},
+    ["Dodgeball"]           = {cat = "Team",        strat = "pvp"},
+    ["Flintlock Fight"]     = {cat = "Team",        strat = "pvp"},
+    ["Football Fever"]      = {cat = "Team",        strat = "team"},
+    ["Freeze Affray"]       = {cat = "Team",        strat = "pvp"},
+    ["King of the Hill"]    = {cat = "Team",        strat = "defense"},
+    ["Marble Madness"]      = {cat = "Team",        strat = "team"},
+    ["Mower Mania"]         = {cat = "Team",        strat = "team"},
+    ["Orb Collection"]      = {cat = "Team",        strat = "collect"},
+    ["Rolling Race"]        = {cat = "Team",        strat = "race"},
+    ["Tank Attack"]         = {cat = "Team",        strat = "pvp"},
+    ["Teamwork Trial"]      = {cat = "Team",        strat = "team"},
+    ["Tile Takeover"]       = {cat = "Team",        strat = "team"},
+    ["Whack-a-Block"]       = {cat = "Team",        strat = "team"},
+
+    -- Versus / PvP
+    ["Accurate Archery"]    = {cat = "Versus",      strat = "pvp"},
+    ["Backforth Dash"]      = {cat = "Versus",      strat = "race"},
+    ["Backstreet Brawl"]    = {cat = "Versus",      strat = "pvp"},
+    ["Balloon Platoon"]     = {cat = "Versus",      strat = "pvp"},
+    ["Blast Mining"]        = {cat = "Versus",      strat = "collect"},
+    ["Blow Dryer Battle"]   = {cat = "Versus",      strat = "pvp"},
+    ["Bomb Ball"]           = {cat = "Versus",      strat = "pvp"},
+    ["Bomberblox"]          = {cat = "Versus",      strat = "pvp"},
+    ["Brickbattle"]         = {cat = "Versus",      strat = "pvp"},
+    ["Colour Our World"]    = {cat = "Versus",      strat = "collect"},
+    ["Colour Run"]          = {cat = "Versus",      strat = "race"},
+    ["Drawing the Line"]    = {cat = "Versus",      strat = "puzzle"},
+    ["Eagle Observation"]   = {cat = "Versus",      strat = "puzzle"},
+    ["Fishing Frenzy"]      = {cat = "Versus",      strat = "collect"},
+    ["Gear Battle"]         = {cat = "Versus",      strat = "pvp"},
+    ["Gladiator Grounds"]   = {cat = "Versus",      strat = "pvp"},
+    ["Hen Herding"]         = {cat = "Versus",      strat = "collect"},
+    ["Hex-a-Gone"]          = {cat = "Versus",      strat = "survival"},
+    ["Hide Hunt"]           = {cat = "Versus",      strat = "obby"},
+    ["Laser Tag"]           = {cat = "Versus",      strat = "pvp"},
+    ["Nudge and Budge"]     = {cat = "Versus",      strat = "pvp"},
+    ["Only One Path"]       = {cat = "Versus",      strat = "obby"},
+    ["Outbreak"]            = {cat = "Versus",      strat = "pvp"},
+    ["Rampant Rhythms"]     = {cat = "Versus",      strat = "puzzle"},
+    ["Ring Diver"]          = {cat = "Versus",      strat = "collect"},
+    ["Rocket Rumble"]       = {cat = "Versus",      strat = "survival"},
+    ["Solo Swordsman"]      = {cat = "Versus",      strat = "pvp"},
+    ["Timestamp Trace"]     = {cat = "Versus",      strat = "puzzle"},
+    ["Trampoline Acrobat"]  = {cat = "Versus",      strat = "obby"},
+
+    -- Seasonal
+    ["Collection Contention"] = {cat = "Seasonal", strat = "collect"},
+}
+
+-- Сортированный список имён для дропдауна
+local MinigameNames = {"Lobby"}
+for name,_ in pairs(Minigames) do table.insert(MinigameNames, name) end
+table.sort(MinigameNames, function(a,b) return a < b end)
+
+------------------------------------------------------------
+-- Утилиты character/humanoid
+------------------------------------------------------------
+local function getChar()  return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait() end
+local function getHum()   local c = getChar(); return c:FindFirstChildOfClass("Humanoid") end
+local function getHRP()   local c = getChar(); return c:FindFirstChild("HumanoidRootPart") end
+
+------------------------------------------------------------
+-- ОПРЕДЕЛЕНИЕ ТЕКУЩЕЙ МИНИИГРЫ
+-- Стратегии (по приоритету):
+--   1) StringValue в ReplicatedStorage с именем CurrentMinigame/MinigameName/CurMinigame
+--   2) StringValue / IntValue в ReplicatedStorage чьё .Value соответствует одной из миниигр
+--   3) Сканирование PlayerGui — TextLabel текст которого совпадает с миниигрой
+--   4) Сканирование Workspace на наличие модели с именем миниигры
+------------------------------------------------------------
+local function tryByReplicatedValue()
+    -- Прямые имена
+    for _,name in ipairs({"CurrentMinigame","MinigameName","CurMinigame","CurrentGame","Minigame","CurrentMap","Map","CurrentStatus","Status"}) do
+        local v = ReplicatedStorage:FindFirstChild(name, true)
+        if v and v:IsA("StringValue") and v.Value ~= "" then
+            local val = tostring(v.Value)
+            if Minigames[val] then return val end
+            -- иногда в Status пишут "Now playing: X"
+            for mg,_ in pairs(Minigames) do
+                if string.find(val, mg, 1, true) then return mg end
+            end
+        end
+    end
+    -- Любой StringValue с подходящим значением
+    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("StringValue") then
+            local v = tostring(d.Value)
+            if Minigames[v] then return v end
+        end
+    end
+    return nil
+end
+
+local function tryByPlayerGui()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    for _,d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            local t = tostring(d.Text or "")
+            if t ~= "" and #t < 60 then
+                if Minigames[t] then return t end
+                -- "Minigame: X" / "Now playing: X"
+                local cap = t:match("[Mm]inigame[%s:]+(.+)$") or t:match("[Pp]laying[%s:]+(.+)$") or t:match("[Nn]ow[%s]*[Pp]laying[%s:]*(.+)$")
+                if cap and Minigames[cap] then return cap end
+            end
+        end
+    end
+    return nil
+end
+
+local function tryByWorkspace()
+    for mg,_ in pairs(Minigames) do
+        if Workspace:FindFirstChild(mg, true) then return mg end
+    end
+    return nil
+end
+
+local function detectMinigame()
+    return tryByReplicatedValue() or tryByPlayerGui() or tryByWorkspace() or "Lobby"
+end
+
+------------------------------------------------------------
+-- ХЕЛПЕРЫ ЧИТОВ
+------------------------------------------------------------
+
+------------------------------------------------------------
+-- FLY (новая версия, работает на ПК и телефоне)
+-- ПК:  WASD + Space/Shift + камера
+-- Тел: экранные кнопки ↑ ↓ ⬆ (вперёд по камере) + сам наводишь камерой
+------------------------------------------------------------
+local FlyLV, FlyAO, FlyAtt, FlyConn
+local FlyGui, FlyBtnFwd, FlyBtnBack, FlyBtnUp, FlyBtnDown
+local FlyMobileInput = {fwd = false, back = false, up = false, down = false}
+
+local function destroyFlyGui()
+    if FlyGui then FlyGui:Destroy(); FlyGui = nil end
+    FlyBtnFwd, FlyBtnBack, FlyBtnUp, FlyBtnDown = nil, nil, nil, nil
+end
+
+local function buildFlyGui()
+    destroyFlyGui()
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then return end
+    FlyGui = Instance.new("ScreenGui")
+    FlyGui.Name = "EM_FlyControls"
+    FlyGui.ResetOnSpawn = false
+    FlyGui.IgnoreGuiInset = true
+    FlyGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    FlyGui.Parent = pg
+
+    local function mkBtn(name, text, pos)
+        local b = Instance.new("TextButton")
+        b.Name = name
+        b.Size = UDim2.new(0, 64, 0, 64)
+        b.Position = pos
+        b.AnchorPoint = Vector2.new(0, 0)
+        b.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+        b.BackgroundTransparency = 0.25
+        b.BorderSizePixel = 0
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(255,255,255)
+        b.TextScaled = true
+        b.Font = Enum.Font.GothamBold
+        b.AutoButtonColor = false
+        local c = Instance.new("UICorner", b); c.CornerRadius = UDim.new(0, 12)
+        local s = Instance.new("UIStroke", b); s.Color = Color3.fromRGB(120,120,140); s.Thickness = 1.5; s.Transparency = 0.4
+        b.Parent = FlyGui
+        return b
+    end
+
+    -- Размещаем в правом нижнем углу
+    FlyBtnUp   = mkBtn("Up",   "▲",   UDim2.new(1, -90,  1, -240))
+    FlyBtnDown = mkBtn("Down", "▼",   UDim2.new(1, -90,  1, -90))
+    FlyBtnFwd  = mkBtn("Fwd",  "GO",  UDim2.new(1, -170, 1, -165))
+    FlyBtnBack = mkBtn("Back", "BACK",UDim2.new(1, -10,  1, -165))
+
+    local function bind(btn, key)
+        btn.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.Touch
+                or i.UserInputType == Enum.UserInputType.MouseButton1 then
+                FlyMobileInput[key] = true
+                btn.BackgroundColor3 = Color3.fromRGB(80,140,255)
+            end
+        end)
+        btn.InputEnded:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.Touch
+                or i.UserInputType == Enum.UserInputType.MouseButton1 then
+                FlyMobileInput[key] = false
+                btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+            end
+        end)
+    end
+    bind(FlyBtnFwd,  "fwd")
+    bind(FlyBtnBack, "back")
+    bind(FlyBtnUp,   "up")
+    bind(FlyBtnDown, "down")
+end
+
+local function stopFly()
+    State.Fly = false
+    if FlyConn then FlyConn:Disconnect(); FlyConn = nil end
+    if FlyLV then FlyLV:Destroy(); FlyLV = nil end
+    if FlyAO then FlyAO:Destroy(); FlyAO = nil end
+    if FlyAtt then FlyAtt:Destroy(); FlyAtt = nil end
+    destroyFlyGui()
+    for k,_ in pairs(FlyMobileInput) do FlyMobileInput[k] = false end
+end
+
+local function startFly()
+    stopFly()
+    local hrp = getHRP(); local hum = getHum()
+    if not hrp or not hum then return end
+    State.Fly = true
+
+    -- Современные движители (работают даже там, где BodyVelocity убрали)
+    FlyAtt = Instance.new("Attachment")
+    FlyAtt.Name = "EM_FlyAtt"
+    FlyAtt.Parent = hrp
+
+    FlyLV = Instance.new("LinearVelocity")
+    FlyLV.Name = "EM_FlyLV"
+    FlyLV.Attachment0 = FlyAtt
+    FlyLV.MaxForce = math.huge
+    FlyLV.PlaneVelocity = Vector2.zero
+    FlyLV.VectorVelocity = Vector3.zero
+    FlyLV.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+    FlyLV.MaxAxesForce = Vector3.new(1e6, 1e6, 1e6)
+    FlyLV.RelativeTo = Enum.ActuatorRelativeTo.World
+    FlyLV.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    FlyLV.Parent = hrp
+
+    FlyAO = Instance.new("AlignOrientation")
+    FlyAO.Name = "EM_FlyAO"
+    FlyAO.Attachment0 = FlyAtt
+    FlyAO.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    FlyAO.RigidityEnabled = true
+    FlyAO.Parent = hrp
+
+    -- Снимаем гравитацию через PlatformStand чтобы Humanoid не дёргал
+    if hum then pcall(function() hum.PlatformStand = false end) end
+
+    if IS_MOBILE then buildFlyGui() end
+
+    FlyConn = RunService.RenderStepped:Connect(function()
+        if not State.Fly then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local move = Vector3.zero
+
+        -- Клавиатура
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space)     then move = move + Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.new(0,1,0) end
+
+        -- Экранные кнопки (мобила/планшет)
+        if FlyMobileInput.fwd  then move = move + cam.CFrame.LookVector end
+        if FlyMobileInput.back then move = move - cam.CFrame.LookVector end
+        if FlyMobileInput.up   then move = move + Vector3.new(0,1,0) end
+        if FlyMobileInput.down then move = move - Vector3.new(0,1,0) end
+
+        if move.Magnitude > 0 then move = move.Unit end
+
+        if FlyLV then FlyLV.VectorVelocity = move * State.FlySpeed end
+        if FlyAO then FlyAO.CFrame = cam.CFrame end
+    end)
+end
+
+------------------------------------------------------------
+-- HOVER — зависнуть в воздухе и не упасть
+-- Поднимает на HoverHeight studs и удерживает там
+-- (используется для миниигр где надо избегать предметов/падений)
+------------------------------------------------------------
+local HoverConn, HoverAnchor, HoverCFrame
+local function stopHover()
+    State.Hover = false
+    if HoverConn then HoverConn:Disconnect(); HoverConn = nil end
+    HoverAnchor = nil
+    HoverCFrame = nil
+    local hum = getHum()
+    if hum then
+        pcall(function() hum.PlatformStand = false end)
+    end
+    local hrp = getHRP()
+    if hrp then
+        pcall(function() hrp.Anchored = false end)
+    end
+    -- удалить старые ограничители, если остались с прошлых версий
+    local char = LocalPlayer.Character
+    if char then
+        for _, n in ipairs({"EM_HoverAtt","EM_HoverAP","EM_HoverAO"}) do
+            local x = char:FindFirstChild(n, true)
+            if x then x:Destroy() end
+        end
+    end
+end
+
+local function startHover(heightOverride)
+    stopHover()
+    local hrp = getHRP(); local hum = getHum()
+    if not hrp or not hum then return end
+    State.Hover = true
+    local height = heightOverride or State.HoverHeight or 30
+
+    -- Поднимаем персонажа вверх и запоминаем точку
+    local lifted = hrp.CFrame + Vector3.new(0, height, 0)
+    hrp.CFrame = lifted
+    HoverAnchor = lifted.Position
+    HoverCFrame = lifted
+
+    -- Гасим Humanoid, чтобы он не тянул вниз / не дёргался
+    pcall(function() hum.PlatformStand = true end)
+
+    -- Жёстко удерживаем CFrame каждый кадр — это работает на 100%
+    HoverConn = RunService.Stepped:Connect(function()
+        if not State.Hover then return end
+        local p = getHRP(); local h = getHum()
+        if not p or not h then return end
+        -- если включён Fly — не мешаем ему
+        if State.Fly then return end
+        -- Движок отшвырнул далеко от точки зависания => телепорт конца раунда.
+        if HoverAnchor and (p.Position - HoverAnchor).Magnitude > 130 then
+            State.RoundEndSignal = true
+            stopHover()
+            return
+        end
+        pcall(function()
+            p.AssemblyLinearVelocity  = Vector3.zero
+            p.AssemblyAngularVelocity = Vector3.zero
+            -- сохраняем поворот персонажа, фиксируем только позицию
+            local rot = p.CFrame - p.CFrame.Position
+            p.CFrame = CFrame.new(HoverAnchor) * rot
+            h.PlatformStand = true
+        end)
+    end)
+end
+
+local NoclipConn
+local function setNoclip(on)
+    State.Noclip = on
+    if NoclipConn then NoclipConn:Disconnect(); NoclipConn = nil end
+    if on then
+        NoclipConn = RunService.Stepped:Connect(function()
+            local c = LocalPlayer.Character
+            if c then
+                for _,v in ipairs(c:GetDescendants()) do
+                    if v:IsA("BasePart") then v.CanCollide = false end
+                end
+            end
+        end)
+    end
+end
+
+local InfJumpConn
+local function setInfJump(on)
+    State.InfJump = on
+    if InfJumpConn then InfJumpConn:Disconnect(); InfJumpConn = nil end
+    if on then
+        InfJumpConn = UserInputService.JumpRequest:Connect(function()
+            local h = getHum()
+            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end)
+    end
+end
+
+local ClickTPConn
+local function setClickTP(on)
+    State.ClickTP = on
+    if ClickTPConn then ClickTPConn:Disconnect(); ClickTPConn = nil end
+    if on then
+        ClickTPConn = Mouse.Button1Down:Connect(function()
+            if not UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then return end
+            local hrp = getHRP()
+            if hrp and Mouse.Hit then
+                hrp.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0,3,0))
+            end
+        end)
+    end
+end
+
+local GodModeConn
+local function setGodMode(on)
+    State.GodMode = on
+    if GodModeConn then GodModeConn:Disconnect(); GodModeConn = nil end
+    if on then
+        GodModeConn = RunService.Heartbeat:Connect(function()
+            local h = getHum()
+            if h then
+                pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
+                if h.Health < h.MaxHealth then
+                    pcall(function() h.Health = h.MaxHealth end)
+                end
+            end
+        end)
+    end
+end
+
+local AntiFlingConn
+local function setAntiFling(on)
+    State.AntiFling = on
+    if AntiFlingConn then AntiFlingConn:Disconnect(); AntiFlingConn = nil end
+    if on then
+        AntiFlingConn = RunService.Heartbeat:Connect(function()
+            local hrp = getHRP()
+            if hrp then
+                if hrp.AssemblyLinearVelocity.Magnitude > 200 then
+                    pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+                end
+                if hrp.AssemblyAngularVelocity.Magnitude > 50 then
+                    pcall(function() hrp.AssemblyAngularVelocity = Vector3.zero end)
+                end
+            end
+        end)
+    end
+end
+
+local function applySpeed()
+    local h = getHum()
+    if h then pcall(function() h.WalkSpeed = State.WalkSpeed end) end
+end
+local function applyJump()
+    local h = getHum()
+    if h then
+        pcall(function() h.JumpPower = State.JumpPower end)
+        pcall(function() h.JumpHeight = State.JumpPower / 5 end)
+    end
+end
+
+-- Перепривязываем читы при респавне
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char:WaitForChild("Humanoid")
+    task.wait(0.2)
+    applySpeed(); applyJump()
+    if State.Fly then startFly() end
+    if State.Hover then startHover() end
+    if State.Noclip then setNoclip(true) end
+    if State.InfJump then setInfJump(true) end
+    if State.GodMode then setGodMode(true) end
+    if State.AntiFling then setAntiFling(true) end
+end)
+
+------------------------------------------------------------
+-- СТРАТЕГИИ ОБХОДА (по категориям)
+------------------------------------------------------------
+local AnchorConn
+local function clearAnchor()
+    if AnchorConn then AnchorConn:Disconnect(); AnchorConn = nil end
+end
+
+------------------------------------------------------------
+-- КАСТОМНЫЕ ОБХОДЫ (под конкретные миниигры)
+------------------------------------------------------------
+local CustomActive = {ring=false, turntable=false, orbit=false, nudge=false, fishing=false, hedge=false, bullet=false, flintlock=false, swordsman=false, castleclash=false, gladiator=false, brawl=false, lavaforecast=false, mining=false, hurdle=false, blockhunt=false, bounceout=false, juggernaut=false, cake=false, hidehunt=false, abovewater=false, archery=false, spiral=false, trial=false, minefield=false, cubefactory=false, rhythm=false}
+local FishingFx   = {}      -- BasePart -> {Size = original Vector3}
+local FlintlockFx = {}      -- Player  -> {head, headSize, headTrans, headCol, headMass}
+
+-- ===== Kill Aura (универсальный) =====
+local KillAuraFx = {}  -- Player -> {part, size, trans, col, mass}
+
+local function clearKillAuraFx()
+    for plr, fx in pairs(KillAuraFx) do
+        if fx and fx.part and fx.part.Parent then
+            pcall(function()
+                fx.part.Size = fx.size
+                fx.part.Transparency = fx.trans
+                fx.part.CanCollide = fx.col
+                fx.part.Massless = fx.mass
+            end)
+        end
+    end
+    KillAuraFx = {}
+end
+
+local function applyAuraHitbox(plr, size)
+    if not plr or not plr.Character then return end
+    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if KillAuraFx[plr] and KillAuraFx[plr].part == hrp then return end
+    KillAuraFx[plr] = {
+        part  = hrp,
+        size  = hrp.Size,
+        trans = hrp.Transparency,
+        col   = hrp.CanCollide,
+        mass  = hrp.Massless,
+    }
+    pcall(function()
+        hrp.Size = Vector3.new(size, size, size)
+        hrp.Transparency = 1
+        hrp.CanCollide = false
+        hrp.Massless = true
+    end)
+end
+
+local function startKillAura(opts)
+    stopCustom()
+    CustomActive[opts.flag] = true
+    setGodMode(true)
+    State.WalkSpeed = 28; applySpeed()
+
+    task.spawn(function()
+        local isActive = function() return CustomActive[opts.flag] end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+
+        if opts.waitSeconds and opts.waitSeconds > 0 then
+            pcall(function()
+                Rayfield:Notify({
+                    Title = opts.label or "Kill Aura",
+                    Content = ("Жду %d секунд..."):format(opts.waitSeconds),
+                    Duration = 3,
+                })
+            end)
+            local n = math.floor(opts.waitSeconds * 10)
+            for _ = 1, n do
+                if not isActive() then return end
+                task.wait(0.1)
+            end
+        end
+        if not isActive() then return end
+
+        local myTeam = LocalPlayer.Team
+        local hitbox = opts.hitboxSize or 30
+        local range  = opts.range or 80
+
+        pcall(function()
+            Rayfield:Notify({
+                Title = opts.label or "Kill Aura",
+                Content = opts.teamBased
+                    and ("Команда: "..(myTeam and myTeam.Name or "?")..". Аура по врагам.")
+                    or "FFA — аура по всем.",
+                Duration = 4,
+            })
+        end)
+
+        while isActive() do
+            local sword = equipAnyTool()
+            local foundClose = false
+            local me = getHRP()
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local skip = false
+                    if opts.teamBased and myTeam and plr.Team == myTeam then
+                        skip = true
+                    end
+                    if not skip then
+                        local c   = plr.Character
+                        local hum = c and c:FindFirstChildOfClass("Humanoid")
+                        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                        if c and hum and hum.Health > 0 and hrp then
+                            applyAuraHitbox(plr, hitbox)
+                            if me and (hrp.Position - me.Position).Magnitude < range then
+                                foundClose = true
+                            end
+                        end
+                    end
+                end
+            end
+            if sword and foundClose then
+                pcall(function() sword:Activate() end)
+            end
+            task.wait(0.12)
+        end
+    end)
+end
+
+local function startCastleClash()
+    startKillAura{
+        flag        = "castleclash",
+        teamBased   = true,
+        waitSeconds = 3,
+        hitboxSize  = 30,
+        range       = 120,
+        label       = "Castle Clash",
+    }
+end
+
+local function startGladiatorGrounds()
+    startKillAura{
+        flag        = "gladiator",
+        teamBased   = false,
+        waitSeconds = 3,
+        hitboxSize  = 30,
+        range       = 120,
+        label       = "Gladiator Grounds",
+    }
+end
+
+local function startBackstreetBrawl()
+    startKillAura{
+        flag        = "brawl",
+        teamBased   = false,
+        waitSeconds = 3,
+        hitboxSize  = 30,
+        range       = 120,
+        label       = "Backstreet Brawl",
+    }
+end
+
+local function startBrickbattle()
+    stopCustom()
+    CustomActive.brickbattle = true
+    setGodMode(true)
+    State.WalkSpeed = 30; applySpeed()
+    task.spawn(function()
+        local isActive = function() return CustomActive.brickbattle end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        pcall(function() Rayfield:Notify({Title="Brickbattle", Content="Kill Aura + ТП сзади ближайшего врага.", Duration=4}) end)
+        for _ = 1, 30 do
+            if not isActive() then return end
+            task.wait(0.1)
+        end
+        while isActive() do
+            local tool = equipAnyTool()
+            local enemies = getAliveEnemies()
+            for _, e in ipairs(enemies) do applyAuraHitbox(e.plr, 30) end
+            local me = getHRP()
+            if me and #enemies > 0 and tool then
+                table.sort(enemies, function(a, b)
+                    return (a.hrp.Position - me.Position).Magnitude < (b.hrp.Position - me.Position).Magnitude
+                end)
+                local t = enemies[1]
+                pcall(function()
+                    me.CFrame = t.hrp.CFrame * CFrame.new(0, 0, 3)
+                    me.AssemblyLinearVelocity = Vector3.zero
+                    me.AssemblyAngularVelocity = Vector3.zero
+                end)
+                pcall(function() tool:Activate() end)
+            end
+            task.wait(0.15)
+        end
+    end)
+end
+
+local function startPipeworks()
+    stopCustom()
+    CustomActive.pipeworks = true
+    setGodMode(true)
+    task.spawn(function()
+        local isActive = function() return CustomActive.pipeworks end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        pcall(function() Rayfield:Notify({Title="Pipeworks", Content="Чиню только дыры в радиусе 25 studs (твоя зона). Чужие трубы не трогаю.", Duration=5}) end)
+        for _ = 1, 15 do
+            if not isActive() then return end
+            task.wait(0.1)
+        end
+        while isActive() do
+            local tool = equipAnyTool()
+            local me = getHRP()
+            if not me then
+                task.wait(0.2)
+                continue = true
+            else
+                continue = false
+            end
+            if continue then continue = false; task.wait(0.2); end
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+                    local pos
+                    if d:IsA("BasePart") then
+                        pos = d.Parent.Position
+                    elseif d:IsA("Model") then
+                        pos = d:GetPivot().Position
+                    elseif d:IsA("Attachment") then
+                        pos = d.Parent.Parent.Position
+                    end
+                    local dist = (pos - me.Position).Magnitude
+                    if dist <= 25 then
+                        local name = d.Name:lower()
+                        local parentName = d.Parent and d.Parent.Name:lower() or ""
+                        local isHole = false
+                        for _, w in ipairs({"leak","hole","crack","damage","broken","repair","patch","fix","pipe"}) do
+                            if name:find(w) or parentName:find(w) then isHole = true; break end
+                        end
+                        if not isHole then
+                            if d:IsA("ProximityPrompt") and d.ActionText then
+                                if d.ActionText:lower():find("repair") or d.ActionText:lower():find("fix") or d.ActionText:lower():find("patch") or d.ActionText:lower():find("hammer") then isHole = true end
+                            end
+                        end
+                        if isHole then
+                            if d:IsA("ProximityPrompt") then
+                                pcall(function() fireproximityprompt(d) end)
+                            elseif d:IsA("ClickDetector") then
+                                pcall(function() fireclickdetector(d, 0) end)
+                            end
+                        end
+                    end
+                elseif d:IsA("BasePart") then
+                    local name = d.Name:lower()
+                    local isHole = false
+                    for _, w in ipairs({"leak","hole","crack","damage","broken","repair","patch","fix","pipe"}) do
+                        if name:find(w) then isHole = true; break end
+                    end
+                    if isHole and (d.Position - me.Position).Magnitude <= 25 then
+                        local found = false
+                        for _, child in ipairs(d:GetChildren()) do
+                            if child:IsA("ProximityPrompt") or child:IsA("ClickDetector") then
+                                found = true
+                                break
+                            end
+                        end
+                        if not found then
+                            me.CFrame = CFrame.new(d.Position) + Vector3.new(0,2,0)
+                            task.wait(0.05)
+                            if tool then
+                                pcall(function() tool:Activate() end)
+                            end
+                            pcall(function() firetouchinterest(me, d, 0) end)
+                            pcall(function() firetouchinterest(me, d, 1) end)
+                        end
+                    end
+                end
+            end
+            task.wait(0.2)
+        end
+    end)
+end
+
+-- ===== Lock к фиксированному CFrame =====
+local LockConn
+local function stopLock()
+    if LockConn then LockConn:Disconnect(); LockConn = nil end
+    local h = getHum()
+    if h then pcall(function() h.PlatformStand = false end) end
+end
+
+local function startLockAt(targetCFrame)
+    stopLock()
+    local hrp = getHRP(); local hum = getHum()
+    if not hrp or not hum then return end
+    pcall(function() hrp.CFrame = targetCFrame end)
+    hum.PlatformStand = true
+    local targetPos = targetCFrame.Position
+    LockConn = RunService.Heartbeat:Connect(function()
+        local p = getHRP(); local h = getHum()
+        if p and h then
+            -- Движок сам отшвырнул нас далеко от точки лока => это телепорт
+            -- конца раунда (на спавн). Отпускаем, чтобы не висеть замороженными.
+            if (p.Position - targetPos).Magnitude > 130 then
+                State.RoundEndSignal = true
+                stopLock()
+                return
+            end
+            pcall(function()
+                p.AssemblyLinearVelocity  = Vector3.zero
+                p.AssemblyAngularVelocity = Vector3.zero
+                p.CFrame                  = targetCFrame
+                h.PlatformStand           = true
+            end)
+        end
+    end)
+end
+
+local function stopCustom()
+    CustomActive.ring      = false
+    CustomActive.turntable = false
+    CustomActive.orbit     = false
+    CustomActive.nudge     = false
+    CustomActive.fishing   = false
+    CustomActive.hedge     = false
+    CustomActive.bullet    = false
+    CustomActive.flintlock = false
+    CustomActive.swordsman  = false
+    CustomActive.castleclash = false
+    CustomActive.gladiator  = false
+    CustomActive.brawl      = false
+    CustomActive.lavaforecast = false
+    CustomActive.mining       = false
+    CustomActive.hurdle       = false
+    CustomActive.brickbattle  = false
+    CustomActive.pipeworks    = false
+    CustomActive.downhill     = false
+    CustomActive.blockhunt    = false
+    CustomActive.bounceout    = false
+    CustomActive.juggernaut    = false
+    CustomActive.cake         = false
+    CustomActive.hidehunt     = false
+    CustomActive.abovewater   = false
+    CustomActive.archery      = false
+    CustomActive.spiral       = false
+    CustomActive.trial        = false
+    CustomActive.minefield    = false
+    CustomActive.cubefactory  = false
+    CustomActive.rhythm       = false
+    -- снять lock на координаты
+    stopLock()
+    -- восстановить размеры рыб
+    for part, data in pairs(FishingFx) do
+        pcall(function()
+            if part and part.Parent and data.Size then
+                part.Size = data.Size
+                local hl = part:FindFirstChild("EM_FishHL")
+                if hl then hl:Destroy() end
+            end
+        end)
+    end
+    FishingFx = {}
+    -- восстановить врагов из Flintlock Fight
+    for plr, fx in pairs(FlintlockFx) do
+        if fx.head and fx.head.Parent then
+            pcall(function()
+                fx.head.Size         = fx.headSize
+                fx.head.Transparency = fx.headTrans
+                fx.head.CanCollide   = fx.headCol
+                fx.head.Massless     = fx.headMass or false
+                local hl = fx.head:FindFirstChild("EM_EnemyHL")
+                if hl then hl:Destroy() end
+            end)
+        end
+    end
+    FlintlockFx = {}
+    clearKillAuraFx()
+end
+
+-- эвристика: похожа ли часть на кольцо (для Ring Diver)
+local function isLikelyRing(p)
+    if not p:IsA("BasePart") then return false end
+    if p.Transparency >= 1 then return false end
+    local n = p.Name:lower()
+    if n:find("ring") or n:find("hoop") or n:find("torus") then return true end
+    local mesh = p:FindFirstChildOfClass("SpecialMesh")
+    if mesh then
+        local id = tostring(mesh.MeshId or ""):lower()
+        if id:find("ring") or id:find("torus") or id:find("hoop") then return true end
+    end
+    return false
+end
+
+-- эвристика: ярко-зелёная большая площадка (финиш в Turntable Scurry)
+local function isLikelyGreenFinish(p)
+    if not p:IsA("BasePart") then return false end
+    if p.Transparency >= 1 then return false end
+    local c = p.Color
+    -- ярко-зелёный: G доминирует
+    if not (c.G > 0.55 and c.R < 0.6 and c.B < 0.6 and (c.G - c.R) > 0.2 and (c.G - c.B) > 0.2) then
+        return false
+    end
+    -- размер платформы — не мелкая деталь
+    if p.Size.X < 4 or p.Size.Z < 4 then return false end
+    return true
+end
+
+-- Ring Diver: автосбор колец под водой
+local function startRingDiver()
+    stopCustom()
+    CustomActive.ring = true
+    setGodMode(true)
+    setNoclip(true)            -- сквозь стены/воду — без проблем
+    State.WalkSpeed = 40; applySpeed()
+    Rayfield:Notify({Title = "Ring Diver", Content = "Автосбор колец запущен", Duration = 4})
+    task.spawn(function()
+        while CustomActive.ring do
+            local hrp = getHRP()
+            if hrp then
+                local best, bestDist = nil, math.huge
+                for _, d in ipairs(Workspace:GetDescendants()) do
+                    if isLikelyRing(d) then
+                        local dist = (d.Position - hrp.Position).Magnitude
+                        if dist < bestDist then bestDist, best = dist, d end
+                    end
+                end
+                if best then
+                    pcall(function()
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.CFrame = CFrame.new(best.Position)
+                    end)
+                end
+            end
+            task.wait(0.18)
+        end
+    end)
+end
+
+-- Orbit Snatcher: подняться очень высоко — клешня не достанет
+local function startOrbitSnatcher()
+    stopCustom()
+    CustomActive.orbit = true
+    setGodMode(true)
+    setInfJump(true)
+    -- именно вверх и зависнуть
+    startHover(220)
+    Rayfield:Notify({Title = "Orbit Snatcher", Content = "Подъём на 220 studs — клешня не достанет", Duration = 4})
+end
+
+-- Turntable Scurry: телепорт на зелёный финишный круг
+local function startTurntableScurry()
+    stopCustom()
+    CustomActive.turntable = true
+    setGodMode(true)
+    setNoclip(true)
+    setInfJump(true)
+    State.WalkSpeed = 30; applySpeed()
+    Rayfield:Notify({Title = "Turntable Scurry", Content = "Ищу зелёный финиш и телепортирую туда", Duration = 4})
+    task.spawn(function()
+        while CustomActive.turntable do
+            local hrp = getHRP()
+            if hrp then
+                local best, bestScore = nil, -1
+                for _, d in ipairs(Workspace:GetDescendants()) do
+                    if isLikelyGreenFinish(d) then
+                        local score = d.Size.X * d.Size.Z
+                        if score > bestScore then bestScore, best = score, d end
+                    end
+                end
+                if best then
+                    pcall(function()
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.CFrame = best.CFrame + Vector3.new(0, best.Size.Y/2 + 3, 0)
+                    end)
+                end
+            end
+            task.wait(0.4)
+        end
+    end)
+end
+
+-- Nudge and Budge: мэш левой/правой кнопки очень быстро
+local function findNudgeButtons()
+    local cam = Workspace.CurrentCamera
+    local vp = (cam and cam.ViewportSize) or Vector2.new(1920, 1080)
+    local cands = {}
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return nil, nil end
+    for _, gui in ipairs(pg:GetDescendants()) do
+        if (gui:IsA("ImageButton") or gui:IsA("TextButton")) and gui.Visible and gui.Active ~= false then
+            local visible = true
+            local p = gui.Parent
+            while p and p ~= pg do
+                if p:IsA("GuiObject") and not p.Visible then visible = false; break end
+                p = p.Parent
+            end
+            if visible then
+                local pos  = gui.AbsolutePosition
+                local size = gui.AbsoluteSize
+                local cx, cy = pos.X + size.X/2, pos.Y + size.Y/2
+                if cy > vp.Y * 0.45 and size.X > 30 and size.Y > 30 then
+                    table.insert(cands, {btn = gui, x = cx, y = cy, area = size.X * size.Y})
+                end
+            end
+        end
+    end
+    if #cands < 2 then return nil, nil end
+    table.sort(cands, function(a,b) return a.area > b.area end)
+    local top = {}
+    for i = 1, math.min(8, #cands) do table.insert(top, cands[i]) end
+    table.sort(top, function(a,b) return a.x < b.x end)
+    return top[1].btn, top[#top].btn
+end
+
+local function fireButton(btn)
+    if not btn then return end
+    pcall(function() if firesignal then firesignal(btn.MouseButton1Click) end end)
+    pcall(function() if firesignal then firesignal(btn.MouseButton1Down)  end end)
+    pcall(function() if firesignal then firesignal(btn.MouseButton1Up)    end end)
+    pcall(function() if firesignal then firesignal(btn.Activated)         end end)
+    pcall(function()
+        if firesignal then
+            firesignal(btn.InputBegan, {
+                UserInputType = Enum.UserInputType.MouseButton1,
+                UserInputState = Enum.UserInputState.Begin,
+            })
+            firesignal(btn.InputEnded, {
+                UserInputType = Enum.UserInputType.MouseButton1,
+                UserInputState = Enum.UserInputState.End,
+            })
+        end
+    end)
+end
+
+local function startNudgeBudge()
+    stopCustom()
+    CustomActive.nudge = true
+    Rayfield:Notify({Title = "Nudge and Budge", Content = "Авто-мэш ←/→ запущен (~50 нажатий/сек)", Duration = 4})
+    task.spawn(function()
+        local turn = false
+        while CustomActive.nudge do
+            local left, right = findNudgeButtons()
+            if left and right then
+                fireButton(turn and left or right)
+                turn = not turn
+            end
+            task.wait(0.02)
+        end
+    end)
+end
+
+-- Fishing Frenzy: удалить акул, увеличить хитбокс рыб
+local function startFishingFrenzy()
+    stopCustom()
+    CustomActive.fishing = true
+    setGodMode(true)
+    Rayfield:Notify({Title = "Fishing Frenzy", Content = "Скрываю акул, увеличиваю рыб ×4", Duration = 4})
+    task.spawn(function()
+        while CustomActive.fishing do
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                local n = (d.Name or ""):lower()
+                if n:find("shark") then
+                    if d:IsA("BasePart") then
+                        pcall(function()
+                            d.Transparency = 1
+                            d.CanCollide   = false
+                            d.CanTouch     = false
+                        end)
+                    elseif d:IsA("Model") then
+                        for _, c in ipairs(d:GetDescendants()) do
+                            if c:IsA("BasePart") then
+                                pcall(function()
+                                    c.Transparency = 1
+                                    c.CanCollide   = false
+                                    c.CanTouch     = false
+                                end)
+                            end
+                        end
+                    end
+                elseif n:find("fish") and d:IsA("BasePart") and not FishingFx[d] then
+                    FishingFx[d] = {Size = d.Size}
+                    pcall(function()
+                        d.Size = d.Size * 4
+                        d.Massless = true
+                        local hl = Instance.new("Highlight")
+                        hl.Name = "EM_FishHL"
+                        hl.FillColor = Color3.fromRGB(80, 220, 120)
+                        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                        hl.FillTransparency = 0.4
+                        hl.Parent = d
+                    end)
+                end
+            end
+            task.wait(0.4)
+        end
+    end)
+end
+
+-- Ждём пока игрок реально телепортируется на карту миниигры
+-- (HRP сместится больше чем на 50 studs от стартовой позиции)
+local function waitForMinigameStart(isActive, timeout)
+    -- Считаем, что раунд начался, когда игрока ТЕЛЕПОРТНУЛО на карту.
+    -- Детектим двумя способами, чтобы не зависнуть до таймаута:
+    --   1) текущая позиция далеко от запомненного лобби (State.LobbyPos) —
+    --      срабатывает даже если applyStrategy вызвали УЖЕ после телепорта;
+    --   2) либо заметное смещение от точки, где стартовала стратегия.
+    local hrp = getHRP()
+    local startPos = hrp and hrp.Position or nil
+    local t0 = tick()
+    timeout = timeout or 12
+    while (tick() - t0) < timeout do
+        if isActive and not isActive() then return false end
+        local p = getHRP()
+        if p then
+            -- уже далеко от лобби — точно на карте
+            if State.LobbyPos and (p.Position - State.LobbyPos).Magnitude > 60 then
+                task.wait(0.3)
+                return true
+            end
+            -- заметный телепорт от точки запуска стратегии
+            if startPos and (p.Position - startPos).Magnitude > 50 then
+                task.wait(0.3)
+                return true
+            end
+        end
+        task.wait(0.1)
+    end
+    return true -- по таймауту тоже срабатываем (на всякий случай)
+end
+
+local function startHedgeWayOut()
+    stopCustom()
+    CustomActive.hedge = true
+    setGodMode(true)
+    task.spawn(function()
+        if waitForMinigameStart(function() return CustomActive.hedge end) then
+            if CustomActive.hedge then
+                startLockAt(CFrame.new(-256.17691, 66.1833878, -37.5397339))
+            end
+        end
+    end)
+end
+
+local function startBulletBound()
+    stopCustom()
+    CustomActive.bullet = true
+    setGodMode(true)
+    task.spawn(function()
+        if waitForMinigameStart(function() return CustomActive.bullet end) then
+            if CustomActive.bullet then
+                startLockAt(CFrame.new(156.32579, 636.719727, -16.3486118))
+            end
+        end
+    end)
+end
+
+local function startHurdleHurry()
+    stopCustom()
+    CustomActive.hurdle = true
+    setGodMode(true)
+    task.spawn(function()
+        if waitForMinigameStart(function() return CustomActive.hurdle end) then
+            if CustomActive.hurdle then
+                startLockAt(CFrame.new(-81.3374252, 2.60467243, 722.347534))
+            end
+        end
+    end)
+end
+
+local function startDownhillRoll()
+    stopCustom()
+    CustomActive.downhill = true
+    setGodMode(true)
+    task.spawn(function()
+        if waitForMinigameStart(function() return CustomActive.downhill end) then
+            if CustomActive.downhill then
+                startLockAt(CFrame.new(-103.715042, -23.870285, -377.038452))
+            end
+        end
+    end)
+end
+
+local function startBlockHunt()
+    stopCustom()
+    CustomActive.blockhunt = true
+    setGodMode(true)
+    State.WalkSpeed = 50; applySpeed()
+    task.spawn(function()
+        local isActive = function() return CustomActive.blockhunt end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+
+        local myTeam = LocalPlayer.Team
+        local myColor = myTeam and myTeam.TeamColor and myTeam.TeamColor.Color
+        pcall(function()
+            Rayfield:Notify({
+                Title = "Block Hunt",
+                Content = myTeam
+                    and ("Команда: " .. myTeam.Name .. ". Жду 15с (placement), потом ТП по кубам врага.")
+                    or "Команда не определена — буду ломать все цветные кубы.",
+                Duration = 5,
+            })
+        end)
+
+        for _ = 1, 150 do
+            if not isActive() then return end
+            task.wait(0.1)
+        end
+        if not isActive() then return end
+
+        local destroyed = setmetatable({}, {__mode = "k"})
+        local function colorDist(a, b)
+            return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B)
+        end
+        local function saturation(c)
+            return math.max(c.R, c.G, c.B) - math.min(c.R, c.G, c.B)
+        end
+        local function isCube(p)
+            if not p:IsA("BasePart") or not p.Anchored then return false end
+            local s = p.Size
+            if s.X < 1 or s.X > 6 then return false end
+            if math.abs(s.X - s.Y) > 0.6 then return false end
+            if math.abs(s.Y - s.Z) > 0.6 then return false end
+            return true
+        end
+        local function isEnemyColor(c)
+            if myColor then
+                return colorDist(c, myColor) > 0.6
+            else
+                return saturation(c) > 0.35
+            end
+        end
+
+        local function touchBlock(target)
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+                hrp.CFrame = CFrame.new(target.Position)
+            end)
+            task.wait(0.05)
+            if firetouchinterest then
+                local parts = { hrp }
+                for _, name in ipairs({ "LeftFoot", "RightFoot", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart" }) do
+                    local p = char:FindFirstChild(name)
+                    if p and p ~= hrp then table.insert(parts, p) end
+                end
+                for _, p in ipairs(parts) do
+                    pcall(firetouchinterest, p, target, 0)
+                    pcall(firetouchinterest, p, target, 1)
+                end
+            end
+        end
+
+        while isActive() do
+            local me = getHRP()
+            if not me then
+                task.wait(0.3)
+            else
+                local cands = {}
+                for _, d in ipairs(Workspace:GetDescendants()) do
+                    if not isActive() then break end
+                    if not destroyed[d] and isCube(d) then
+                        local sat = saturation(d.Color)
+                        if sat >= 0.35 and isEnemyColor(d.Color) then
+                            table.insert(cands, d)
+                        end
+                    end
+                end
+                if #cands > 0 then
+                    table.sort(cands, function(a, b)
+                        return (a.Position - me.Position).Magnitude < (b.Position - me.Position).Magnitude
+                    end)
+                    local target = cands[1]
+                    touchBlock(target)
+                    destroyed[target] = true
+                    task.wait(0.18)
+                else
+                    task.wait(0.35)
+                end
+            end
+        end
+    end)
+end
+
+local function startLavaForecast()
+    stopCustom()
+    CustomActive.lavaforecast = true
+    setGodMode(true)
+    task.spawn(function()
+        if not waitForMinigameStart(function() return CustomActive.lavaforecast end) then return end
+        local hrp = getHRP()
+        local startPos = hrp.Position
+        task.wait(0.4)
+        local newPos = hrp.Position
+        startLockAt(CFrame.new(newPos.X + 60, newPos.Y + 10, newPos.Z))
+    end)
+end
+
+local function startBounceOut()
+    stopCustom()
+    CustomActive.bounceout = true
+    setGodMode(true)
+    task.spawn(function()
+        if waitForMinigameStart(function() return CustomActive.bounceout end) then
+            if CustomActive.bounceout then
+                startLockAt(CFrame.new(-4.74174356, 515.400146, 18.4893417))
+            end
+        end
+    end)
+end
+
+local function startJuggernaut()
+    stopCustom()
+    CustomActive.juggernaut = true
+    setGodMode(true)
+    State.WalkSpeed = 40; applySpeed()
+    task.spawn(function()
+        local isActive = function() return CustomActive.juggernaut end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        task.wait(3)
+        if not isActive() then return end
+
+        local function findJuggernaut()
+            -- по имени команды
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Team and plr.Team.Name:lower():find("jugger") then
+                    return plr
+                end
+            end
+            -- резерв: тот кто один на своей
+            local teamCounts = {}
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local team = plr.Team
+                    if team then
+                        teamCounts[team] = (teamCounts[team] or 0) + 1
+                    end
+                end
+            end
+            for team, count in pairs(teamCounts) do
+                if count == 1 then
+                    for _, plr in ipairs(Players:GetPlayers()) do
+                        if plr ~= LocalPlayer and plr.Team == team then
+                            return plr
+                        end
+                    end
+                end
+            end
+            return nil
+        end
+
+        -- определяем кто я
+        local amJuggernaut = false
+        if LocalPlayer.Team and LocalPlayer.Team.Name:lower():find("jugger") then
+            amJuggernaut = true
+        else
+            local myTeamCount = 0
+            if LocalPlayer.Team then
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr.Team == LocalPlayer.Team then myTeamCount = myTeamCount + 1 end
+                end
+                if myTeamCount == 1 then amJuggernaut = true end
+            end
+        end
+
+        pcall(function()
+            Rayfield:Notify({
+                Title = "Juggernaut",
+                Content = amJuggernaut and "Ты Джаггернаут — ТП к каждому и убиваем." or "Ты выживший — авто-аим по Джаггернауту.",
+                Duration = 5,
+            })
+        end)
+
+        if amJuggernaut then
+            -- я джаггер: ТП к каждому, бить молотком
+            local killed = setmetatable({}, {__mode = "k"})
+            while isActive() do
+                local tool = equipAnyTool()
+                local me = getHRP()
+                if not me then task.wait(0.2) else
+                    -- ищем живых не-меня, кого ещё не убили (или кто переродился)
+                    local targets = {}
+                    for _, plr in ipairs(Players:GetPlayers()) do
+                        if plr ~= LocalPlayer then
+                            local c = plr.Character
+                            local h = c and c:FindFirstChildOfClass("Humanoid")
+                            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                            if c and h and h.Health > 0 and hrp then
+                                table.insert(targets, {plr=plr, hum=h, hrp=hrp})
+                            end
+                        end
+                    end
+                    if #targets == 0 then
+                        task.wait(0.3)
+                    else
+                        table.sort(targets, function(a,b)
+                            return (a.hrp.Position - me.Position).Magnitude
+                                 < (b.hrp.Position - me.Position).Magnitude
+                        end)
+                        local target = targets[1]
+                        local t0 = tick()
+                        while isActive() and target.hum.Parent and target.hum.Health > 0
+                              and target.hrp.Parent and (tick() - t0) < 4
+                        do
+                            local m = getHRP()
+                            if not m then break end
+                            local behind = target.hrp.CFrame * CFrame.new(0, 0, 3)
+                            pcall(function()
+                                m.AssemblyLinearVelocity = Vector3.zero
+                                m.AssemblyAngularVelocity = Vector3.zero
+                                m.CFrame = behind
+                            end)
+                            if tool then pcall(function() tool:Activate() end) end
+                            task.wait(0.1)
+                        end
+                    end
+                end
+            end
+        else
+            -- я выживший: аим-бот по джаггеру
+            while isActive() do
+                local jug = findJuggernaut()
+                if not jug or not jug.Character then
+                    task.wait(0.3)
+                else
+                    local jugHRP = jug.Character:FindFirstChild("HumanoidRootPart")
+                    local jugHum = jug.Character:FindFirstChildOfClass("Humanoid")
+                    local me = getHRP()
+                    local weapon = equipAnyTool()
+                    if jugHRP and jugHum and jugHum.Health > 0 and me and weapon then
+                        pcall(function()
+                            me.CFrame = CFrame.lookAt(me.Position, jugHRP.Position)
+                        end)
+                        local cam = Workspace.CurrentCamera
+                        if cam then
+                            pcall(function()
+                                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, jugHRP.Position)
+                            end)
+                        end
+                        pcall(function() weapon:Activate() end)
+                    end
+                    task.wait(0.05)
+                end
+            end
+        end
+    end)
+end
+
+local function startCakeDelivery()
+    stopCustom()
+    CustomActive.cake = true
+    setGodMode(true)
+    State.WalkSpeed = 60; applySpeed()
+    task.spawn(function()
+        local isActive = function() return CustomActive.cake end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        task.wait(1.5)
+
+        -- читаем номер из PlayerGui
+        local function readMyNumber()
+            local pg = LocalPlayer:FindFirstChild("PlayerGui")
+            if not pg then return nil end
+            local best, bestScore = nil, -1
+            for _, gui in ipairs(pg:GetDescendants()) do
+                if gui:IsA("TextLabel") and gui.Visible then
+                    -- проверяем что родитель видим
+                    local p = gui.Parent
+                    local vis = true
+                    while p and p ~= pg do
+                        if p:IsA("GuiObject") and not p.Visible then vis = false; break end
+                        p = p.Parent
+                    end
+                    if vis then
+                        local txt = (gui.Text or ""):match("^%s*(%-?%d+)%s*$")
+                        if txt then
+                            local n = tonumber(txt)
+                            if n and n >= 0 and n <= 999 then
+                                local size = gui.AbsoluteSize
+                                local score = size.X * size.Y
+                                if score > bestScore then
+                                    bestScore = score
+                                    best = n
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            return best
+        end
+
+        local function findDoor(num)
+            -- ищем дверь с этим номером в Workspace
+            local numStr = tostring(num)
+            local candidates = {}
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    local n = d.Name
+                    -- имя точно равно числу или содержит "_N", "N", "Door N"
+                    if n == numStr
+                       or n:lower():find("door[ _]?" .. numStr .. "$")
+                       or n:lower():find("door[ _]?" .. numStr .. "[^%d]")
+                       or n:find("[^%d]" .. numStr .. "$")
+                       or n:find("^" .. numStr .. "$")
+                    then
+                        table.insert(candidates, d)
+                    end
+                end
+                -- SurfaceGui/BillboardGui с TextLabel = num на двери
+                if d:IsA("TextLabel") and (d.Text or ""):match("^%s*"..numStr.."%s*$") then
+                    local part = d:FindFirstAncestorOfClass("BasePart")
+                          or (d.Parent and d.Parent:FindFirstAncestorOfClass("BasePart"))
+                    if part then table.insert(candidates, part) end
+                end
+            end
+            if #candidates == 0 then return nil end
+            -- берём самый большой (двери обычно большие)
+            table.sort(candidates, function(a,b)
+                return (a.Size.X * a.Size.Y * a.Size.Z) > (b.Size.X * b.Size.Y * b.Size.Z)
+            end)
+            return candidates[1]
+        end
+
+        local lastNum = nil
+        while isActive() do
+            local num = readMyNumber()
+            local me = getHRP()
+            if num and me then
+                if num ~= lastNum then
+                    lastNum = num
+                    pcall(function()
+                        Rayfield:Notify({Title="Cake Delivery", Content="Номер: "..num.." → ищу дверь.", Duration=3})
+                    end)
+                end
+                local door = findDoor(num)
+                if door then
+                    pcall(function()
+                        me.AssemblyLinearVelocity = Vector3.zero
+                        me.CFrame = door.CFrame * CFrame.new(0, 0, -3)
+                    end)
+                end
+            end
+            task.wait(0.3)
+        end
+    end)
+end
+
+local function startHideHunt()
+    stopCustom()
+    CustomActive.hidehunt = true
+    setGodMode(true)
+    task.spawn(function()
+        local isActive = function() return CustomActive.hidehunt end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+
+        pcall(function()
+            Rayfield:Notify({Title="Hide Hunt", Content="Жду 12 секунд...", Duration=3})
+        end)
+        for _ = 1, 120 do
+            if not isActive() then return end
+            task.wait(0.1)
+        end
+
+        local function hasHammer()
+            local c = LocalPlayer.Character
+            local bp = LocalPlayer:FindFirstChild("Backpack")
+            local function check(parent)
+                if not parent then return nil end
+                for _, t in ipairs(parent:GetChildren()) do
+                    if t:IsA("Tool") then
+                        local n = t.Name:lower()
+                        if n:find("hammer") or n:find("mallet") or n:find("seek") then
+                            return t
+                        end
+                    end
+                end
+                return nil
+            end
+            return check(c) or check(bp)
+        end
+
+        local seeker = hasHammer() ~= nil
+        -- если молоток ещё не выдан, ждём до 5 сек
+        local t0 = tick()
+        while not seeker and (tick() - t0) < 5 and isActive() do
+            task.wait(0.3)
+            if hasHammer() then seeker = true end
+        end
+
+        pcall(function()
+            Rayfield:Notify({
+                Title="Hide Hunt",
+                Content = seeker and "Ты искатель — ТП ко всем + автоудар." or "Ты прячешься — Hover вверх.",
+                Duration = 4,
+            })
+        end)
+
+        if seeker then
+            local killed = setmetatable({}, {__mode = "k"})
+            local myTeam = LocalPlayer.Team
+            while isActive() do
+                local tool = equipAnyTool()
+                local me = getHRP()
+                if not me then task.wait(0.2) else
+                    local targets = {}
+                    for _, plr in ipairs(Players:GetPlayers()) do
+                        if plr ~= LocalPlayer and not (myTeam and plr.Team == myTeam) then
+                            local c = plr.Character
+                            local h = c and c:FindFirstChildOfClass("Humanoid")
+                            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                            if c and h and h.Health > 0 and hrp then
+                                table.insert(targets, {hum=h, hrp=hrp})
+                            end
+                        end
+                    end
+                    if #targets == 0 then
+                        task.wait(0.3)
+                    else
+                        table.sort(targets, function(a,b)
+                            return (a.hrp.Position - me.Position).Magnitude
+                                 < (b.hrp.Position - me.Position).Magnitude
+                        end)
+                        local target = targets[1]
+                        local tk = tick()
+                        while isActive() and target.hum.Parent and target.hum.Health > 0
+                              and target.hrp.Parent and (tick() - tk) < 4
+                        do
+                            local m = getHRP()
+                            if not m then break end
+                            local behind = target.hrp.CFrame * CFrame.new(0, 0, 3)
+                            pcall(function()
+                                m.AssemblyLinearVelocity = Vector3.zero
+                                m.AssemblyAngularVelocity = Vector3.zero
+                                m.CFrame = behind
+                            end)
+                            if tool then pcall(function() tool:Activate() end) end
+                            task.wait(0.08)
+                        end
+                    end
+                end
+            end
+        else
+            -- прячусь: висю наверху
+            startHover(80)
+            while isActive() do task.wait(0.5) end
+        end
+    end)
+end
+
+local function startBlastMining()
+    stopCustom()
+    CustomActive.mining = true
+    setGodMode(true)
+    task.spawn(function()
+        if not waitForMinigameStart(function() return CustomActive.mining end) then return end
+        pcall(function() Rayfield:Notify({Title="Blast Mining", Content="Жму всё кликабельное, кроме бомб (по слову в имени).", Duration=4}) end)
+        local done = setmetatable({}, {__mode = "k"})
+        local BOMB_WORDS = {"bomb","tnt","explos","danger","trap","fuse","boom","mine","dynamite","barrel","skull","c4","death","kill"}
+
+        local function nameHasBomb(obj)
+            if not obj then return false end
+            local n = tostring(obj.Name):lower()
+            for _, w in ipairs(BOMB_WORDS) do if n:find(w, 1, true) then return true end end
+            return false
+        end
+
+        local function fireNode(node)
+            if done[node] then return end
+            done[node] = true
+            if node:IsA("ClickDetector") then
+                pcall(function() if fireclickdetector then fireclickdetector(node, 0) end end)
+                pcall(function() if fireclickdetector then fireclickdetector(node, 1) end end)
+                pcall(function() if firesignal then firesignal(node.MouseClick, LocalPlayer) end end)
+            elseif node:IsA("ProximityPrompt") then
+                pcall(function() if fireproximityprompt then fireproximityprompt(node) end end)
+            end
+            local me = getHRP()
+            local part = node.Parent
+            if me and part and part:IsA("BasePart") then
+                pcall(function() if firetouchinterest then firetouchinterest(me, part, 0); firetouchinterest(me, part, 1) end end)
+            end
+        end
+
+        while CustomActive.mining do
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if not CustomActive.mining then break end
+                if (d:IsA("ClickDetector") or d:IsA("ProximityPrompt")) and not done[d] then
+                    if nameHasBomb(d) or nameHasBomb(d.Parent) then
+                        done[d] = true   -- бомбу не трогаем никогда
+                    else
+                        fireNode(d)
+                    end
+                end
+            end
+            task.wait(0.08)
+        end
+    end)
+end
+local function startFlintlockFight()
+    stopCustom()
+    CustomActive.flintlock = true
+    setGodMode(true)
+    State.WalkSpeed = 28; applySpeed()
+    setInfJump(true)
+
+    local myTeam = LocalPlayer.Team
+    if myTeam then
+        pcall(function()
+            Rayfield:Notify({
+                Title   = "Flintlock Fight",
+                Content = "Твоя команда: " .. tostring(myTeam.Name) .. ". Увеличиваю хитбокс врагов ×10.",
+                Duration = 4,
+            })
+        end)
+    else
+        pcall(function()
+            Rayfield:Notify({
+                Title   = "Flintlock Fight",
+                Content = "Команда не определена — буду считать врагами всех остальных игроков.",
+                Duration = 4,
+            })
+        end)
+    end
+
+    local function enlargeEnemy(plr)
+        if plr == LocalPlayer then return end
+        -- если команда есть — увеличиваем только противоположную, иначе всех
+        if myTeam and plr.Team == myTeam then return end
+        if FlintlockFx[plr] then return end
+        local char = plr.Character
+        if not char then return end
+        local head = char:FindFirstChild("Head")
+        if not (head and head:IsA("BasePart")) then return end
+        FlintlockFx[plr] = {
+            head       = head,
+            headSize   = head.Size,
+            headTrans  = head.Transparency,
+            headCol    = head.CanCollide,
+            headMass   = head.Massless,
+        }
+        pcall(function()
+            head.Size         = Vector3.new(15, 15, 15)
+            head.Transparency = 0.6
+            head.CanCollide   = false
+            head.Massless     = true
+            local hl = Instance.new("Highlight")
+            hl.Name        = "EM_EnemyHL"
+            hl.FillColor   = Color3.fromRGB(255, 60, 60)
+            hl.OutlineColor= Color3.fromRGB(255, 255, 255)
+            hl.FillTransparency    = 0.4
+            hl.OutlineTransparency = 0
+            hl.Parent = head
+        end)
+    end
+
+    task.spawn(function()
+        while CustomActive.flintlock do
+            for _, plr in ipairs(Players:GetPlayers()) do
+                pcall(enlargeEnemy, plr)
+            end
+            -- очищаем умерших/удалённых из FlintlockFx
+            for plr, fx in pairs(FlintlockFx) do
+                if not plr.Parent or not fx.head or not fx.head.Parent then
+                    FlintlockFx[plr] = nil
+                end
+            end
+            task.wait(0.5)
+        end
+    end)
+end
+
+-- ===== Solo Swordsman =====
+local function findEquippedTool(char)
+    if not char then return nil end
+    for _, t in ipairs(char:GetChildren()) do
+        if t:IsA("Tool") then return t end
+    end
+    return nil
+end
+
+local function findToolInBackpack()
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if not bp then return nil end
+    for _, t in ipairs(bp:GetChildren()) do
+        if t:IsA("Tool") then return t end
+    end
+    return nil
+end
+
+local function equipAnyTool()
+    local char = LocalPlayer.Character
+    local equipped = findEquippedTool(char)
+    if equipped then return equipped end
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return nil end
+    local tool = findToolInBackpack()
+    if tool then
+        pcall(function() hum:EquipTool(tool) end)
+        task.wait(0.1)
+        return findEquippedTool(LocalPlayer.Character)
+    end
+    return nil
+end
+
+local function getAliveEnemies()
+    local res = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local c = plr.Character
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+            if c and h and h.Health > 0 and hrp then
+                table.insert(res, {plr = plr, char = c, hum = h, hrp = hrp})
+            end
+        end
+    end
+    return res
+end
+
+local function startSoloSwordsman()
+    stopCustom()
+    CustomActive.swordsman = true
+    setGodMode(true)
+    State.WalkSpeed = 30; applySpeed()
+
+    task.spawn(function()
+        if not waitForMinigameStart(function() return CustomActive.swordsman end) then return end
+        if not CustomActive.swordsman then return end
+
+        pcall(function()
+            Rayfield:Notify({Title = "Solo Swordsman", Content = "ТП на карту. Жду 12 секунд...", Duration = 3})
+        end)
+        for _ = 1, 120 do
+            if not CustomActive.swordsman then return end
+            task.wait(0.1)
+        end
+        if not CustomActive.swordsman then return end
+
+        pcall(function()
+            Rayfield:Notify({Title = "Solo Swordsman", Content = "Готов. Сканирую меч / врагов.", Duration = 3})
+        end)
+
+        while CustomActive.swordsman do
+            local sword = equipAnyTool()
+            if not sword then
+                -- меча нет — висим в воздухе
+                if not State.Hover then startHover(40) end
+                task.wait(0.5)
+            else
+                if State.Hover then stopHover() end
+                local enemies = getAliveEnemies()
+                if #enemies == 0 then
+                    if not State.Hover then startHover(20) end
+                    task.wait(0.4)
+                else
+                    local myHRP = getHRP()
+                    if myHRP then
+                        for _, e in ipairs(enemies) do
+                            applyAuraHitbox(e.plr, 25)
+                        end
+                        table.sort(enemies, function(a, b)
+                            return (a.hrp.Position - myHRP.Position).Magnitude
+                                 < (b.hrp.Position - myHRP.Position).Magnitude
+                            end)
+                        local target = enemies[1]
+                        local attackStart = tick()
+                        while CustomActive.swordsman
+                              and target.hum
+                              and target.hum.Parent
+                              and target.hum.Health > 0
+                              and target.char
+                              and target.char.Parent
+                              and (tick() - attackStart) < 6 do
+                            local me = getHRP()
+                            if not me then break end
+                            local behind = target.hrp.CFrame * CFrame.new(0, 0, 3)
+                            pcall(function()
+                                me.AssemblyLinearVelocity = Vector3.zero
+                                me.CFrame = behind
+                            end)
+                            pcall(function() sword:Activate() end)
+                            task.wait(0.12)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- ===== Above Water =====
+-- Платформа врага держится на опорах/башнях. Целимся ПОД вражескую команду
+-- (туда, где опоры) и непрерывно стреляем имеющимся оружием — платформа обвалится,
+-- враги падают в воду. Себя держим в GodMode + AntiFling, чтобы не утонуть.
+local function startAboveWater()
+    stopCustom()
+    CustomActive.abovewater = true
+    setGodMode(true)
+    setAntiFling(true)
+    task.spawn(function()
+        local isActive = function() return CustomActive.abovewater end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        pcall(function() Rayfield:Notify({
+            Title   = "Above Water",
+            Content = "Целюсь по опорам вражеской платформы и стреляю — она обвалится.",
+            Duration = 5,
+        }) end)
+
+        local myTeam = LocalPlayer.Team
+
+        -- точка прицеливания: центр вражеской команды, но чуть НИЖЕ —
+        -- туда, где опоры/башни держат их платформу
+        local function enemyAimPoint()
+            local sum, n = Vector3.zero, 0
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and (not myTeam or plr.Team ~= myTeam) then
+                    local c = plr.Character
+                    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                    local hum = c and c:FindFirstChildOfClass("Humanoid")
+                    if hrp and hum and hum.Health > 0 then
+                        sum = sum + hrp.Position
+                        n = n + 1
+                    end
+                end
+            end
+            if n == 0 then return nil end
+            local center = sum / n
+            return center - Vector3.new(0, 10, 0) -- метим в основание платформы
+        end
+
+        while isActive() do
+            local me   = getHRP()
+            local tool = equipAnyTool()
+            local aim  = enemyAimPoint()
+            if me and aim then
+                local cam = Workspace.CurrentCamera
+                pcall(function()
+                    me.CFrame = CFrame.lookAt(me.Position, aim)
+                    me.AssemblyAngularVelocity = Vector3.zero
+                end)
+                if cam then
+                    pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim) end)
+                end
+                if tool then pcall(function() tool:Activate() end) end
+            end
+            task.wait(0.1)
+        end
+    end)
+end
+
+-- ===== Accurate Archery =====
+-- Стрельба из лука по мишеням. Ищем ближайшую мишень (по имени), целимся камерой
+-- и HRP точно в её центр и непрерывно жмём Activate (стреляем).
+local function startAccurateArchery()
+    stopCustom()
+    CustomActive.archery = true
+    task.spawn(function()
+        local isActive = function() return CustomActive.archery end
+        if not waitForMinigameStart(isActive) then return end
+        if not isActive() then return end
+        pcall(function() Rayfield:Notify({
+            Title   = "Accurate Archery",
+            Content = "Авто-прицел в центр мишени + автострельба из лука.",
+            Duration = 5,
+        }) end)
+
+        local TARGET_WORDS = {"target","bullseye","bull","centre","center","circle","ring","board","dartboard","apple"}
+        local function hasAny(name, words)
+            for _, w in ipairs(words) do if name:find(w, 1, true) then return true end end
+            return false
+        end
+
+        -- ищем «яблочко»: часть с подходящим именем, ближе и мельче = предпочтительнее
+        local function findTargetPoint()
+            local me = getHRP()
+            if not me then return nil end
+            local best, bestScore
+            for _, dsc in ipairs(Workspace:GetDescendants()) do
+                if dsc:IsA("BasePart") and dsc.Transparency < 1 then
+                    local n = dsc.Name:lower()
+                    if hasAny(n, TARGET_WORDS) then
+                        local dist = (dsc.Position - me.Position).Magnitude
+                        if dist > 3 and dist < 600 then
+                            local score = dist + dsc.Size.Magnitude * 3
+                            if not bestScore or score < bestScore then
+                                bestScore, best = score, dsc
+                            end
+                        end
+                    end
+                end
+            end
+            return best and best.Position or nil
+        end
+
+        while isActive() do
+            local me   = getHRP()
+            local tool = equipAnyTool()
+            local aim  = findTargetPoint()
+            if me and aim then
+                local cam = Workspace.CurrentCamera
+                pcall(function() me.CFrame = CFrame.lookAt(me.Position, aim) end)
+                if cam then
+                    pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim) end)
+                end
+                if tool then
+                    pcall(function() tool:Activate() end)
+                end
+            end
+            task.wait(0.15)
+        end
+    end)
+end
+
+-- классификация цвета части в имя: red / green / blue / yellow
+local function rgbName(c)
+    if not c then return nil end
+    local r, g, b = c.R, c.G, c.B
+    if r > 0.5 and g > 0.45 and b < 0.45 and math.abs(r - g) < 0.45 then return "yellow" end
+    if r > 0.45 and (r - g) > 0.18 and (r - b) > 0.18 then return "red" end
+    if g > 0.45 and (g - r) > 0.18 and (g - b) > 0.18 then return "green" end
+    if b > 0.45 and (b - r) > 0.18 and (b - g) > 0.18 then return "blue" end
+    return nil
+end
+
+-- общий помощник: ТП на координаты финиша + лок
+local function tpLock(flagKey, x, y, z)
+    return function()
+        stopCustom()
+        CustomActive[flagKey] = true
+        setGodMode(true)
+        task.spawn(function()
+            if waitForMinigameStart(function() return CustomActive[flagKey] end) then
+                if CustomActive[flagKey] then
+                    startLockAt(CFrame.new(x, y, z))
+                end
+            end
+        end)
+    end
+end
+
+local startSpiralAscent     = tpLock("spiral",    117, 307, 1)
+local startTrialTraversing  = tpLock("trial",     23,  243, 29)
+local startMinefieldMarch   = tpLock("minefield", 300, -388, 82)
+
+-- Cube Factory: спамим кнопку совпадения, чтобы поймать каждое окно цвета
+local function startCubeFactory()
+    stopCustom()
+    CustomActive.cubefactory = true
+    setGodMode(true)
+    task.spawn(function()
+        if not waitForMinigameStart(function() return CustomActive.cubefactory end) then return end
+        pcall(function() Rayfield:Notify({Title="Cube Factory", Content="Спамлю кнопку совпадения — ловлю каждое окно цвета.", Duration=4}) end)
+
+        local function fireNode(node)
+            if node:IsA("ClickDetector") then
+                pcall(function() if fireclickdetector then fireclickdetector(node, 0) end end)
+                pcall(function() if firesignal then firesignal(node.MouseClick, LocalPlayer) end end)
+            elseif node:IsA("ProximityPrompt") then
+                pcall(function() if fireproximityprompt then fireproximityprompt(node) end end)
+            elseif node:IsA("GuiButton") then
+                pcall(function() if firesignal then firesignal(node.MouseButton1Click) end end)
+                pcall(function() if firesignal then firesignal(node.Activated) end end)
+            end
+        end
+
+        while CustomActive.cubefactory do
+            local me = getHRP()
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if not CustomActive.cubefactory then break end
+                if d:IsA("ClickDetector") or d:IsA("ProximityPrompt") then
+                    local part = d.Parent
+                    if part and part:IsA("BasePart") and me then
+                        if (part.Position - me.Position).Magnitude < 70 then fireNode(d) end
+                    else
+                        fireNode(d)
+                    end
+                end
+            end
+            local pg = LocalPlayer:FindFirstChild("PlayerGui")
+            if pg then
+                for _, g in ipairs(pg:GetDescendants()) do
+                    if not CustomActive.cubefactory then break end
+                    if g:IsA("GuiButton") and g.Visible then
+                        local n = (tostring(g.Name) .. " " .. tostring(g.Text or "")):lower()
+                        if n:find("cube") or n:find("match") or n:find("stamp") or n:find("press") or n:find("factory") or n:find("go") then
+                            fireNode(g)
+                        end
+                    end
+                end
+            end
+            task.wait(0.05)
+        end
+    end)
+end
+
+-- Rampant Rhythms: автотап по цвету бита, когда он доходит до кнопки
+local function startRampantRhythms()
+    stopCustom()
+    CustomActive.rhythm = true
+    task.spawn(function()
+        if not waitForMinigameStart(function() return CustomActive.rhythm end) then return end
+        pcall(function() Rayfield:Notify({Title="Rampant Rhythms", Content="Автотап по цвету бита у кнопки (red/green/blue/yellow).", Duration=4}) end)
+
+        local function findButtons()
+            local me = getHRP()
+            local btns = {}
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if d:IsA("ClickDetector") then
+                    local part = d.Parent
+                    if part and part:IsA("BasePart") then
+                        local cn = rgbName(part.Color)
+                        if cn and (not me or (part.Position - me.Position).Magnitude < 90) then
+                            local prev = btns[cn]
+                            if not prev or part.Size.Magnitude > prev.size then
+                                btns[cn] = {cd = d, part = part, pos = part.Position, size = part.Size.Magnitude}
+                            end
+                        end
+                    end
+                end
+            end
+            return btns
+        end
+
+        local function fireBtn(b)
+            pcall(function() if fireclickdetector then fireclickdetector(b.cd, 0) end end)
+            pcall(function() if firesignal then firesignal(b.cd.MouseClick, LocalPlayer) end end)
+        end
+
+        local cooldown = {}
+        while CustomActive.rhythm do
+            local btns = findButtons()
+            for _, d in ipairs(Workspace:GetDescendants()) do
+                if not CustomActive.rhythm then break end
+                if d:IsA("BasePart") and d.Transparency < 1 then
+                    local cn = rgbName(d.Color)
+                    if cn and btns[cn] then
+                        local b = btns[cn]
+                        if d ~= b.part and d.Size.Magnitude < b.size then
+                            local dist = (d.Position - b.pos).Magnitude
+                            if dist < 7 then
+                                local t = tick()
+                                if not cooldown[cn] or (t - cooldown[cn]) > 0.12 then
+                                    cooldown[cn] = t
+                                    fireBtn(b)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(0.03)
+        end
+    end)
+end
+
+local CustomBypass = {
+    ["Ring Diver"]        = startRingDiver,
+    ["Orbit Snatcher"]    = startOrbitSnatcher,
+    ["Turntable Scurry"]  = startTurntableScurry,
+    ["Nudge and Budge"]   = startNudgeBudge,
+    ["Fishing Frenzy"]    = startFishingFrenzy,
+    ["Hedge Way Out"]     = startHedgeWayOut,
+    ["Bullet Bound"]      = startBulletBound,
+    ["Hurdle Hurry"]      = startHurdleHurry,
+    ["Downhill Roll"]     = startDownhillRoll,
+    ["Block Hunt"]        = startBlockHunt,
+    ["Bounce Out"]        = startBounceOut,
+    ["Juggernaut"]        = startJuggernaut,
+    ["Cake Delivery"]     = startCakeDelivery,
+    ["Hide Hunt"]         = startHideHunt,
+    ["Flintlock Fight"]   = startFlintlockFight,
+    ["Solo Swordsman"]    = startSoloSwordsman,
+    ["Castle Clash"]      = startCastleClash,
+    ["Gladiator Grounds"] = startGladiatorGrounds,
+    ["Backstreet Brawl"]  = startBackstreetBrawl,
+    ["Brickbattle"]       = startBrickbattle,
+    ["Pipeworks"]         = startPipeworks,
+    ["Above Water"]       = startAboveWater,
+    ["Accurate Archery"]  = startAccurateArchery,
+    ["Spiral Ascent"]     = startSpiralAscent,
+    ["Trial Traversing"]  = startTrialTraversing,
+    ["Minefield March"]   = startMinefieldMarch,
+    ["Cube Factory"]      = startCubeFactory,
+    ["Rampant Rhythms"]   = startRampantRhythms,
+}
+
+local PendingStrategyId = 0
+
+local function applyStrategy(strat, name)
+    clearAnchor()
+    stopCustom()
+    State.BypassActive = true
+    PendingStrategyId = PendingStrategyId + 1
+
+    -- сначала проверяем индивидуальный обход
+    if name and CustomBypass[name] then
+        CustomBypass[name]()
+        return
+    end
+
+    if strat == "obby" then
+        State.WalkSpeed = 40
+        State.JumpPower = 60
+        applySpeed(); applyJump()
+        setInfJump(true)
+        if not State.Fly then startFly() end
+
+    elseif strat == "survival" then
+        State.WalkSpeed = 24
+        applySpeed()
+        setInfJump(true)
+        setGodMode(true)
+        local myId = PendingStrategyId
+        task.spawn(function()
+            local active = function() return State.BypassActive and PendingStrategyId == myId end
+            if not waitForMinigameStart(active) then return end
+            if not active() then return end
+            startHover(35)
+        end)
+
+    elseif strat == "race" then
+        State.WalkSpeed = 60
+        State.JumpPower = 70
+        applySpeed(); applyJump()
+        setInfJump(true)
+
+    elseif strat == "pvp" then
+        State.WalkSpeed = 32
+        State.JumpPower = 60
+        applySpeed(); applyJump()
+        setInfJump(true)
+        setGodMode(true)
+
+    elseif strat == "team" then
+        State.WalkSpeed = 28
+        applySpeed()
+        setInfJump(true)
+
+    elseif strat == "defense" then
+        setGodMode(true)
+        local myId = PendingStrategyId
+        task.spawn(function()
+            local active = function() return State.BypassActive and PendingStrategyId == myId end
+            if not waitForMinigameStart(active) then return end
+            if not active() then return end
+            startHover(15)
+        end)
+
+    elseif strat == "collect" then
+        State.WalkSpeed = 50
+        applySpeed()
+        setNoclip(true)
+        setInfJump(true)
+        if not State.Fly then startFly() end
+
+    elseif strat == "puzzle" then
+        setInfJump(true)
+        setGodMode(true)
+        local myId = PendingStrategyId
+        task.spawn(function()
+            local active = function() return State.BypassActive and PendingStrategyId == myId end
+            if not waitForMinigameStart(active) then return end
+            if not active() then return end
+            startHover(40)
+        end)
+    end
+end
+
+local function clearStrategy()
+    State.BypassActive = false
+    clearAnchor()
+    stopCustom()
+    if State.Fly then stopFly() end
+    if State.Hover then stopHover() end
+    setNoclip(false)
+    setInfJump(false)
+    setGodMode(false)
+    State.WalkSpeed = 16
+    State.JumpPower = 50
+    applySpeed(); applyJump()
+    -- Сбросить и визуальное состояние тумблеров в UI, чтобы они показывали OFF
+    for _, flag in ipairs({"Fly","Hover","Noclip","InfJump","GodMode"}) do
+        pcall(function()
+            local f = Rayfield and Rayfield.Flags and Rayfield.Flags[flag]
+            if f and f.Set then f:Set(false) end
+        end)
+    end
+end
+
+local STRAT_LABEL = {
+    obby     = "Fly + Speed + InfJump (пройти этап)",
+    survival = "Hover (зависнуть над ареной) + GodMode",
+    race     = "Скорость x4 + InfJump",
+    pvp      = "Скорость + GodMode + InfJump",
+    team     = "Скорость + InfJump (играть за команду)",
+    defense  = "Якорь над спотом + GodMode",
+    collect  = "Noclip + Fly + Speed (собирать всё)",
+    puzzle   = "Hover (висеть в воздухе) + GodMode",
+    custom   = "Индивидуальный обход для этой миниигры",
+}
+
+local CustomLabel = {
+    ["Ring Diver"]        = "Автосбор колец под водой",
+    ["Orbit Snatcher"]    = "Подъём на 220 studs (клешня не достанет)",
+    ["Turntable Scurry"]  = "ТП на зелёный финиш",
+    ["Nudge and Budge"]   = "Авто-мэш ←/→ (~50 нажатий/сек)",
+    ["Fishing Frenzy"]    = "Скрыть акул + хитбокс рыб ×4",
+    ["Hedge Way Out"]     = "ТП на безопасные коорд. после старта раунда",
+    ["Bullet Bound"]      = "ТП на 636 studs над картой (пули не достанут)",
+    ["Hurdle Hurry"]      = "ТП на финиш и лок (-81.3, 2.6, 722.3)",
+    ["Downhill Roll"]     = "ТП на координаты финиша (-103.7, -23.9, -377.0)",
+    ["Block Hunt"]        = "Жду 15с (placement), затем ТП по кубам врага с firetouchinterest (без молотка)",
+    ["Bounce Out"]        = "ТП на координаты (515 studs вверх)",
+    ["Juggernaut"]        = "Аим-бот: автонаведение и стрельба по Джаггернауту (если я выживший); если я джаггер — ТП к каждому и бью",
+    ["Cake Delivery"]     = "Читаю номер с экрана → ТП к двери с этим номером",
+    ["Hide Hunt"]         = "Жду 12с → есть молоток: ТП и убиваю; нет: Hover на 80 studs",
+    ["Above Water"]       = "Авто-аим по опорам вражеской платформы + автострельба (обрушить)",
+    ["Accurate Archery"]  = "Авто-аим в центр мишени + автострельба из лука",
+    ["Flintlock Fight"]   = "Хитбокс головы врагов ×10 + GodMode",
+    ["Solo Swordsman"]    = "Жду 12с → нет меча: висну; есть: Kill Aura + ТП сзади",
+    ["Castle Clash"]      = "Kill Aura по вражеской команде (хитбокс ×30 + автосвинг)",
+    ["Gladiator Grounds"] = "Kill Aura FFA (хитбокс ×30 + автосвинг)",
+    ["Backstreet Brawl"]  = "Kill Aura FFA на кулаках (хитбокс ×30 + автоудар)",
+    ["Brickbattle"]       = "Kill Aura + ТП за спину ближайшего (хитбокс ×30, любое оружие)",
+    ["Pipeworks"]         = "Авто-починка дыр в радиусе 25 studs (только твоя труба)",
+    ["Lava Forecast"]     = "Левитация в 60 studs вправо (не наверх — там лава падает)",
+    ["Blast Mining"]      = "Жму всё кликабельное, КРОМЕ бомб (по слову в имени)",
+    ["Above Water"]       = "Аим в основание вражеской платформы + автострельба (она обвалится)",
+    ["Accurate Archery"]  = "Автоприцел в центр мишени + автострельба из лука",
+    ["Spiral Ascent"]     = "ТП на финиш (117, 307, 1) + лок",
+    ["Trial Traversing"]  = "ТП на финиш (23, 243, 29) + лок",
+    ["Minefield March"]   = "ТП на финиш (300, -388, 82) + лок",
+    ["Cube Factory"]      = "Спам кнопки совпадения (ловит каждое окно цвета)",
+    ["Rampant Rhythms"]   = "Автотап по цвету бита у кнопки",
+}
+
+------------------------------------------------------------
+-- UI (Rayfield)
+------------------------------------------------------------
+local ok, Rayfield = pcall(function()
+    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+end)
+if not ok or not Rayfield then
+    warn("[EpicMinigames] Не удалось загрузить Rayfield. Проверь интернет/исполнитель.")
+    return
+end
+
+local Window = Rayfield:CreateWindow({
+    Name = "Epic Minigames Hub",
+    LoadingTitle = "Epic Minigames",
+    LoadingSubtitle = "by Zo • Delta build",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false,
+})
+
+-- ===== TAB: Main =====
+local TabMain = Window:CreateTab("Main", 4483362458)
+
+TabMain:CreateSection("Текущая мини-игра")
+local MGLabel = TabMain:CreateParagraph({Title = "Minigame: Lobby", Content = "Ожидание начала раунда..."})
+
+TabMain:CreateSection("Авто-обход")
+local AutoBypassToggle = TabMain:CreateToggle({
+    Name = "Auto-Bypass (определять и обходить сам)",
+    CurrentValue = false,
+    Flag = "AutoBypass",
+    Callback = function(v)
+        State.AutoBypass = v
+        if not v then
+            clearStrategy()
+        else
+            -- Если включили Auto-Bypass, уже находясь на карте миниигры —
+            -- применяем сразу, не дожидаясь следующего раунда.
+            local mg = State.CurrentMinigame
+            local d = Minigames[mg]
+            if d then applyStrategy(d.strat, mg) end
+        end
+    end
+})
+
+TabMain:CreateSlider({
+    Name = "Задержка старта (сек после обнаружения)",
+    Range = {0, 30}, Increment = 1, Suffix = "с",
+    CurrentValue = 17, Flag = "StartDelay",
+    Callback = function(v) State.StartDelay = v end
+})
+
+local ManualOptions = {"Auto (по миниигре)"}
+for _,name in ipairs(MinigameNames) do
+    if name ~= "Lobby" then table.insert(ManualOptions, name) end
+end
+TabMain:CreateDropdown({
+    Name = "Применить обход вручную",
+    Options = ManualOptions,
+    CurrentOption = {"Auto (по миниигре)"},
+    Flag = "ManualBypass",
+    Callback = function(opt)
+        local val = (type(opt) == "table") and opt[1] or opt
+        State.ManualBypass = val
+        if val == "Auto (по миниигре)" then return end
+        local data = Minigames[val]
+        if data then
+            applyStrategy(data.strat, val)
+            local label = CustomLabel[val] or STRAT_LABEL[data.strat] or data.strat
+            Rayfield:Notify({Title = "Bypass", Content = ("%s → %s"):format(val, label), Duration = 4})
+        end
+    end
+})
+
+TabMain:CreateButton({
+    Name = "Применить обход для ТЕКУЩЕЙ миниигры",
+    Callback = function()
+        local mg = State.CurrentMinigame
+        local d = Minigames[mg]
+        if d then
+            applyStrategy(d.strat, mg)
+            local label = CustomLabel[mg] or STRAT_LABEL[d.strat] or d.strat
+            Rayfield:Notify({Title = "Bypass", Content = ("%s → %s"):format(mg, label), Duration = 4})
+        else
+            Rayfield:Notify({Title = "Bypass", Content = "Не в раунде или миниигра не распознана.", Duration = 4})
+        end
+    end
+})
+
+TabMain:CreateButton({
+    Name = "Сбросить обход (вернуть значения по умолчанию)",
+    Callback = function() clearStrategy(); Rayfield:Notify({Title = "Bypass", Content = "Сброшено.", Duration = 3}) end
+})
+
+-- ===== TAB: Universal =====
+local TabUni = Window:CreateTab("Universal", 7733765696)
+
+TabUni:CreateSection("Скорость и прыжок")
+TabUni:CreateSlider({
+    Name = "WalkSpeed", Range = {16, 200}, Increment = 1, Suffix = "studs/s",
+    CurrentValue = 16, Flag = "WalkSpeed",
+    Callback = function(v) State.WalkSpeed = v; applySpeed() end
+})
+TabUni:CreateSlider({
+    Name = "JumpPower", Range = {50, 300}, Increment = 1, Suffix = "",
+    CurrentValue = 50, Flag = "JumpPower",
+    Callback = function(v) State.JumpPower = v; applyJump() end
+})
+TabUni:CreateToggle({
+    Name = "Infinite Jump", CurrentValue = false, Flag = "InfJump",
+    Callback = function(v) setInfJump(v) end
+})
+
+TabUni:CreateSection("Движение")
+TabUni:CreateToggle({
+    Name = "Fly (WASD / экранные кнопки на телефоне)", CurrentValue = false, Flag = "Fly",
+    Callback = function(v) if v then startFly() else stopFly() end end
+})
+TabUni:CreateSlider({
+    Name = "Fly Speed", Range = {20, 300}, Increment = 5, Suffix = "studs/s",
+    CurrentValue = 80, Flag = "FlySpeed",
+    Callback = function(v) State.FlySpeed = v end
+})
+TabUni:CreateToggle({
+    Name = "Hover (зависнуть в воздухе и не упасть)", CurrentValue = false, Flag = "Hover",
+    Callback = function(v) if v then startHover() else stopHover() end end
+})
+TabUni:CreateSlider({
+    Name = "Hover Height", Range = {5, 200}, Increment = 1, Suffix = "studs",
+    CurrentValue = 30, Flag = "HoverHeight",
+    Callback = function(v)
+        State.HoverHeight = v
+        if State.Hover then
+            local hrp = getHRP()
+            if hrp then HoverAnchor = Vector3.new(hrp.Position.X, hrp.Position.Y - (hrp.Position.Y % 1) + v, hrp.Position.Z) end
+        end
+    end
+})
+TabUni:CreateToggle({
+    Name = "Noclip (проходить сквозь стены)", CurrentValue = false, Flag = "Noclip",
+    Callback = function(v) setNoclip(v) end
+})
+TabUni:CreateToggle({
+    Name = "Click TP (Ctrl + ЛКМ — телепорт в курсор)", CurrentValue = false, Flag = "ClickTP",
+    Callback = function(v) setClickTP(v) end
+})
+
+TabUni:CreateSection("Защита")
+TabUni:CreateToggle({
+    Name = "God Mode (хилит и держит жизнь)", CurrentValue = false, Flag = "GodMode",
+    Callback = function(v) setGodMode(v) end
+})
+TabUni:CreateToggle({
+    Name = "Anti-Fling (резать вылет)", CurrentValue = false, Flag = "AntiFling",
+    Callback = function(v) setAntiFling(v) end
+})
+
+TabUni:CreateSection("Прочее")
+TabUni:CreateButton({
+    Name = "Респавн", Callback = function()
+        local h = getHum()
+        if h then h.Health = 0 end
+    end
+})
+TabUni:CreateButton({
+    Name = "Сохранить безопасную позицию (для якоря)",
+    Callback = function()
+        local hrp = getHRP()
+        if hrp then State.SafePos = hrp.CFrame; Rayfield:Notify({Title = "Safe Pos", Content = "Сохранено.", Duration = 2}) end
+    end
+})
+TabUni:CreateButton({
+    Name = "Телепорт к сохранённой позиции",
+    Callback = function()
+        local hrp = getHRP()
+        if hrp and State.SafePos then hrp.CFrame = State.SafePos end
+    end
+})
+
+-- ===== TAB: Minigames =====
+local TabMG = Window:CreateTab("Minigames", 6034509993)
+TabMG:CreateSection("Категории")
+
+-- Сгруппировать миниигры по категории
+local byCat = {}
+for name, data in pairs(Minigames) do
+    byCat[data.cat] = byCat[data.cat] or {}
+    table.insert(byCat[data.cat], name)
+end
+for _,arr in pairs(byCat) do table.sort(arr, function(a,b) return a<b end) end
+
+local catOrder = {"Controller","Team","Versus","Seasonal"}
+for _,cat in ipairs(catOrder) do
+    if byCat[cat] then
+        TabMG:CreateSection(cat .. "  ("..#byCat[cat]..")")
+        TabMG:CreateDropdown({
+            Name = "Применить обход — " .. cat,
+            Options = byCat[cat],
+            CurrentOption = {byCat[cat][1]},
+            Flag = "MG_"..cat,
+            Callback = function(opt)
+                local name = (type(opt) == "table") and opt[1] or opt
+                local d = Minigames[name]
+                if d then
+                    applyStrategy(d.strat, name)
+                    Rayfield:Notify({Title = name, Content = STRAT_LABEL[d.strat] or d.strat, Duration = 4})
+                end
+            end
+        })
+    end
+end
+
+-- ===== TAB: Info =====
+local TabInfo = Window:CreateTab("Info", 4483345998)
+TabInfo:CreateParagraph({Title = "Как пользоваться",
+    Content = [[
+1) Включи "Auto-Bypass" во вкладке Main — скрипт сам определит миниигру и применит подходящий обход.
+2) Либо выбери миниигру вручную в дропдауне "Применить обход вручную".
+3) Универсальные читы во вкладке Universal работают всегда.
+4) "Сбросить обход" возвращает стандартные параметры персонажа.
+
+Мобильное управление:
+- Когда включён Fly, в правом нижнем углу появятся кнопки: GO/BACK (по камере) и ▲/▼ (вверх/вниз).
+- Hover просто поднимает в воздух и держит — никаких кнопок не нужно.
+]]})
+TabInfo:CreateParagraph({Title = "Стратегии",
+    Content = [[
+obby      — Fly + Speed + InfJump (пройти этап/обби)
+survival  — Hover: висим над ареной + GodMode (избегать всё)
+race      — Макс скорость и прыжок
+pvp       — Скорость + GodMode + InfJump
+team      — Скорость + InfJump
+defense   — Hover на месте + GodMode
+collect   — Noclip + Fly + Speed (собрать все предметы)
+puzzle    — Hover (просто висеть, ничего не задевает)
+]]})
+TabInfo:CreateParagraph({Title = "Поддерживаемые миниигры",
+    Content = ("База: %d миниигр (Controller / Team / Versus / Seasonal)."):format((function() local n=0 for _ in pairs(Minigames) do n=n+1 end return n end)())
+})
+
+------------------------------------------------------------
+-- ЦИКЛ ОПРЕДЕЛЕНИЯ МИНИИГРЫ + AUTO-BYPASS
+------------------------------------------------------------
+task.spawn(function()
+    while task.wait(0.4) do
+        local mg = detectMinigame()
+        State.CurrentMinigame = mg
+        local d = Minigames[mg]
+
+        -- === КОНЕЦ РАУНДА ПО ТЕЛЕПОРТУ ===
+        -- lock/hover отпустили нас, потому что движок телепортнул на спавн.
+        -- Работает даже когда персонаж был «заморожен» — мы поймали сам телепорт.
+        if State.RoundEndSignal then
+            State.RoundEndSignal = false
+            State.RoundGen = State.RoundGen + 1
+            clearStrategy()
+            pcall(function() MGLabel:Set({Title = "Minigame: Lobby", Content = "Раунд закончился — обход снят (поймал телепорт на спавн)."}) end)
+            pcall(function() Rayfield:Notify({Title = "Bypass снят", Content = "Конец раунда — отпустил, едешь на спавн.", Duration = 3}) end)
+        end
+
+        -- Пока в лобби — постоянно запоминаем позицию лобби (для детекта старта/конца).
+        if mg == "Lobby" or not d then
+            local hrp = getHRP()
+            if hrp then State.LobbyPos = hrp.Position end
+        end
+
+        -- === ДЕТЕКТ КОНЦА РАУНДА ПО ПОЗИЦИИ ===
+        -- Если обход активен, а игрока вернуло почти в точку лобби — раунд кончился.
+        -- Ловит конец, даже если название миниигры ещё не успело смениться.
+        if State.BypassActive and State.LobbyPos then
+            local hrp = getHRP()
+            if hrp and (hrp.Position - State.LobbyPos).Magnitude < 35 then
+                State.RoundGen = State.RoundGen + 1
+                clearStrategy()
+                pcall(function() MGLabel:Set({Title = "Minigame: Lobby", Content = "Раунд закончился — обход снят (вернулись в лобби)."}) end)
+                pcall(function() Rayfield:Notify({Title = "Bypass снят", Content = "Вернулись в лобби — обход отключён.", Duration = 3}) end)
+            end
+        end
+
+        if mg ~= State.LastMinigame then
+            local prev = State.LastMinigame
+            State.LastMinigame = mg
+            State.RoundGen = State.RoundGen + 1  -- отменяет отложенный запуск прошлого раунда
+            local content
+            if d then
+                content = ("Категория: %s\nСтратегия: %s\n%s"):format(d.cat, d.strat, STRAT_LABEL[d.strat] or "")
+            else
+                content = "Сейчас в лобби или миниигра не распознана."
+            end
+            pcall(function()
+                MGLabel:Set({Title = "Minigame: " .. mg, Content = content})
+            end)
+
+            -- Карта ПРОПАЛА (раунд закончился / вернулись в лобби) — снять весь обход.
+            local leftMap = (prev ~= "" and prev ~= "Lobby" and (mg == "Lobby" or not d))
+            if leftMap then
+                clearStrategy()
+                pcall(function()
+                    Rayfield:Notify({
+                        Title = "Bypass снят",
+                        Content = "Карта пропала — обход «" .. prev .. "» отключён.",
+                        Duration = 3,
+                    })
+                end)
+            end
+
+            -- Зашли на НОВУЮ карту: ждём StartDelay секунд (раунд успевает реально начаться),
+            -- затем применяем обход. Ожидание отменяется, если миниигра сменилась,
+            -- раунд закончился (RoundGen вырос) или Auto-Bypass выключили.
+            if State.AutoBypass and d then
+                local myGen  = State.RoundGen
+                local thisMg = mg
+                local delay  = State.StartDelay or 17
+                pcall(function()
+                    Rayfield:Notify({
+                        Title = "Minigame: " .. mg,
+                        Content = ("Жду %d сек до старта раунда…"):format(delay),
+                        Duration = 4,
+                    })
+                end)
+                task.spawn(function()
+                    local t0 = tick()
+                    while (tick() - t0) < delay do
+                        task.wait(0.2)
+                        if State.RoundGen ~= myGen then return end
+                        if not State.AutoBypass then return end
+                        if State.CurrentMinigame ~= thisMg then return end
+                    end
+                    if State.RoundGen == myGen and State.AutoBypass and State.CurrentMinigame == thisMg then
+                        applyStrategy(d.strat, thisMg)
+                    end
+                end)
+            end
+        end
+    end
+end)
+
+------------------------------------------------------------
+-- Готово
+------------------------------------------------------------
+Rayfield:Notify({
+    Title = "Epic Minigames Hub загружен",
+    Content = "База: ~"..(#MinigameNames-1).." миниигр. Включай Auto-Bypass во вкладке Main.",
+    Duration = 6,
+})
